@@ -101,7 +101,7 @@ all_systems = [
         interface_type = null
         private_ip     = null
         # Membership the load balancer and the database admit (dependencies/aws/estate.yml).
-        security_groups = ["sg-REPLACE-keycloak-node"]
+        security_groups = ["sg-039971fa1c68a09c0"]
         # Peers by group, never by address: only the load balancer reaches Keycloak, and only the
         # other node reaches the cluster ports.
         ingress = [
@@ -112,7 +112,7 @@ all_systems = [
             to_port                      = 8080
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           },
           {
             description                  = "Keycloak health from the load balancer"
@@ -121,7 +121,7 @@ all_systems = [
             to_port                      = 9000
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           },
           {
             description                  = "Cluster cache traffic from the other node"
@@ -130,7 +130,7 @@ all_systems = [
             to_port                      = 7800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "Cluster failure detection from the other node"
@@ -139,7 +139,7 @@ all_systems = [
             to_port                      = 57800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           }
         ]
         egress = [
@@ -159,7 +159,7 @@ all_systems = [
             to_port                      = 5432
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-db"
+            referenced_security_group_id = "sg-0dc5a14032e73fa56"
           },
           {
             description                  = "Cluster cache traffic to the other node"
@@ -168,7 +168,7 @@ all_systems = [
             to_port                      = 7800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "Cluster failure detection to the other node"
@@ -177,7 +177,7 @@ all_systems = [
             to_port                      = 57800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "HTTP to the load balancer"
@@ -186,7 +186,7 @@ all_systems = [
             to_port                      = 80
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           }
         ]
         tags = {}
@@ -268,7 +268,7 @@ all_systems = [
         interface_type = null
         private_ip     = null
         # Membership the load balancer and the database admit (dependencies/aws/estate.yml).
-        security_groups = ["sg-REPLACE-keycloak-node"]
+        security_groups = ["sg-039971fa1c68a09c0"]
         # Peers by group, never by address: only the load balancer reaches Keycloak, and only the
         # other node reaches the cluster ports.
         ingress = [
@@ -279,7 +279,7 @@ all_systems = [
             to_port                      = 8080
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           },
           {
             description                  = "Keycloak health from the load balancer"
@@ -288,7 +288,7 @@ all_systems = [
             to_port                      = 9000
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           },
           {
             description                  = "Cluster cache traffic from the other node"
@@ -297,7 +297,7 @@ all_systems = [
             to_port                      = 7800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "Cluster failure detection from the other node"
@@ -306,7 +306,7 @@ all_systems = [
             to_port                      = 57800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           }
         ]
         egress = [
@@ -326,7 +326,7 @@ all_systems = [
             to_port                      = 5432
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-db"
+            referenced_security_group_id = "sg-0dc5a14032e73fa56"
           },
           {
             description                  = "Cluster cache traffic to the other node"
@@ -335,7 +335,7 @@ all_systems = [
             to_port                      = 7800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "Cluster failure detection to the other node"
@@ -344,7 +344,7 @@ all_systems = [
             to_port                      = 57800
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-node"
+            referenced_security_group_id = "sg-039971fa1c68a09c0"
           },
           {
             description                  = "HTTP to the load balancer"
@@ -353,7 +353,7 @@ all_systems = [
             to_port                      = 80
             cidr_ipv4                    = null
             prefix_list_id               = null
-            referenced_security_group_id = "sg-REPLACE-keycloak-alb"
+            referenced_security_group_id = "sg-029c0af21605b6452"
           }
         ]
         tags = {}
@@ -379,7 +379,7 @@ all_databases = [
     multi_az               = false
     db_name                = "keycloak"
     db_subnet_group_name   = "keycloak"
-    vpc_security_group_ids = ["sg-REPLACE-keycloak-db"]
+    vpc_security_group_ids = ["sg-0dc5a14032e73fa56"]
     engine                 = "postgres"
     # The major release is the pin: RDS creates the current minor of PostgreSQL 17, which
     # Keycloak 26.7 supports, and the runner may reference only PostgreSQL 17's default groups.
@@ -421,7 +421,7 @@ all_load_balancers = [
     resource_key    = "keycloak"
     name            = "keycloak"
     name_prefix     = null
-    security_groups = ["sg-REPLACE-keycloak-alb"]
+    security_groups = ["sg-029c0af21605b6452"]
     subnets         = ["subnet-03a855e712be7b399", "subnet-0dbb7770d19f253ad"]
     subnet_mapping  = []
 
