@@ -23,6 +23,9 @@
 #   * One fixed state key; this workflow's concurrency group prevents overlapping applies and
 #     never cancels a live lifecycle. A later lifecycle can clean predecessor state before apply;
 #     no age-gated reaper exists for a run killed before destroy.
+#   * The stack is two Keycloak nodes in two zones, an RDS PostgreSQL database and an internal
+#     application load balancer. The playbook converges twice -- the second must change nothing
+#     -- and then proves the cluster survives losing a node, before any hold or teardown.
 #   * Protected-main pushes that touch the deploy inputs — terraform, ansible, the framework
 #     pins, this workflow — prove immediately; an off-minute weekly schedule proves recurrence.
 #     One durable incident is updated on failure and closed after the next successful lifecycle.
@@ -286,7 +289,7 @@ jobs:
       # longer exists. Never adopt it: destroy under the same lock, then apply with a fresh key.
       # A live/out-of-band lock makes this fail closed.
       - name: Remove interrupted predecessor state before apply
-        timeout-minutes: 15
+        timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
@@ -307,7 +310,7 @@ jobs:
       # flag -- is what stops the file from renaming who this fresh deployment says it is.
       - name: Terraform apply
         id: tf-apply
-        timeout-minutes: 15
+        timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
         run: |
           set -euo pipefail
@@ -320,6 +323,26 @@ jobs:
             -var "run_id=${GITHUB_RUN_ID}"                                   \
             -var "runner_ip=${RUNNER_IP}"                                    \
             ${DEBUG_IP:+-var "debug_ip=${DEBUG_IP}"}
+
+      # What Terraform built and the playbook configures against: the database's address and the
+      # ARN of the secret RDS keeps its credentials in, the load balancer's name, and the target
+      # group whose health the proof reads. Passed as an extra-vars file, as the account and
+      # region are passed, so the play and the stack cannot disagree. None of it is secret; the
+      # secret itself is read by the playbook.
+      - name: Read the stack's endpoints
+        working-directory: .frameworks/aws-terraform-framework/terraform
+        run: |
+          set -euo pipefail
+          terraform output -json \
+            | jq '{keycloak_database: (.aws_databases.value.keycloak
+                                       | {address, port, master_user_secret_arn}),
+                   keycloak_load_balancer_dns: .aws_load_balancer_dns_names.value.keycloak,
+                   keycloak_target_group_arn: .aws_target_group_arns.value["keycloak/keycloak"]}' \
+            > "${RUNNER_TEMP}/endpoints.json"
+          jq -e '.keycloak_database.address and .keycloak_database.master_user_secret_arn
+                 and .keycloak_load_balancer_dns and .keycloak_target_group_arn' \
+            "${RUNNER_TEMP}/endpoints.json" > /dev/null \
+            || { echo '::error::Terraform outputs lack a database, load balancer or target group endpoint.'; exit 1; }
 
       # This repo's roles overlay onto the pinned framework tree. A framework-TRACKED role
       # path is refused so an overlay can never replace framework-owned code.
@@ -373,6 +396,7 @@ jobs:
             --extra-vars aws_region="${AWS_REGION}"                            \
             --extra-vars env=test                                              \
             --extra-vars state=present                                         \
+            --extra-vars "@${RUNNER_TEMP}/endpoints.json"                      \
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"
 
       # Idempotency gate (nessus precedent): a settled node reports NO change on a second converge.
@@ -392,6 +416,7 @@ jobs:
             --extra-vars aws_region="${AWS_REGION}"                                     \
             --extra-vars env=test                                                       \
             --extra-vars state=present                                                  \
+            --extra-vars "@${RUNNER_TEMP}/endpoints.json"                               \
             --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml" 2>&1 | tee /dev/stderr)"
           # The controller answers the inventory-contract play and reports changed=0 on its own
           # recap line; judging it would let it satisfy the rule for a host that changed.
@@ -409,6 +434,29 @@ jobs:
             exit 1
           fi
           echo "second converge: every node reported changed=0"
+
+      # The HA proof: the nodes see each other, the load balancer serves from both zones, a change
+      # on one node is seen on the other, and with one node stopped the load balancer still
+      # answers and an earlier session still refreshes; then the node rejoins. It writes a
+      # throwaway realm and stops a node, so it runs after the second converge, not inside it.
+      - name: Prove the cluster survives losing a node
+        timeout-minutes: 20
+        working-directory: .frameworks/ansible-framework
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/.frameworks/ansible-framework/ansible.cfg
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ansible-playbook "${GITHUB_WORKSPACE}/ansible/playbooks/keycloak-aws.yml" \
+            --tags ha_proof                                                    \
+            --extra-vars aws_account_id="${AWS_ACCOUNT_ID}"                    \
+            --extra-vars aws_region="${AWS_REGION}"                            \
+            --extra-vars env=test                                              \
+            --extra-vars state=present                                         \
+            --extra-vars "@${RUNNER_TEMP}/endpoints.json"                      \
+            --inventory "${GITHUB_WORKSPACE}/ansible/inventory/aws_ec2.yml"
 
       - name: Hold the converged guests for interactive work
         if: >-
@@ -460,7 +508,7 @@ jobs:
         if: >-
           always() &&
           steps.tf-init.outcome == 'success'
-        timeout-minutes: 15
+        timeout-minutes: 30
         working-directory: .frameworks/aws-terraform-framework/terraform
         env:
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}

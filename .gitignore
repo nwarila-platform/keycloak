@@ -22,8 +22,10 @@
 !/ansible/applications/
 !/ansible/applications/keycloak/
 !/ansible/applications/keycloak/defaults/
+!/ansible/applications/keycloak/handlers/
 !/ansible/applications/keycloak/meta/
 !/ansible/applications/keycloak/tasks/
+!/ansible/applications/keycloak/templates/
 !/ansible/applications/keycloak/vars/
 !/ansible/inventory/
 !/ansible/playbooks/
@@ -60,11 +62,15 @@
 # --- [ allowed: the ansible tree ] ---------------------------------------------------------- #
 !/ansible/applications/keycloak/README.md
 !/ansible/applications/keycloak/defaults/main.yml
+!/ansible/applications/keycloak/handlers/main.yml
 !/ansible/applications/keycloak/meta/main.yml
 !/ansible/applications/keycloak/tasks/absent_redhat.yml
 !/ansible/applications/keycloak/tasks/main.yml
 !/ansible/applications/keycloak/tasks/present_redhat.yml
 !/ansible/applications/keycloak/tasks/validate.yml
+!/ansible/applications/keycloak/templates/keycloak.conf.j2
+!/ansible/applications/keycloak/templates/keycloak.env.j2
+!/ansible/applications/keycloak/templates/keycloak.service.j2
 !/ansible/applications/keycloak/vars/redhat.yml
 !/ansible/inventory/README.md
 !/ansible/inventory/aws_ec2.yml

@@ -5,8 +5,9 @@
 # Lowest-precedence configuration for the keycloak role. The v3 loader merges the OS overlay in
 # vars/ over this map and publishes the result as 'keycloak_running'; tasks read only that.
 #
-# Universally safe values live here: the runtime, the account, the layout and the build options.
-# The artifact's location and digest change with every site, so they are declared empty and the
+# Universally safe values live here: the runtime, the account, the layout, the build options and
+# the listener. The artifact's location and digest, the hostname, the database and the
+# administrator's password change with every site or stack, so they are declared empty and the
 # PLAYBOOK supplies them where a reader can see them (meta/main.yml, tasks/validate.yml).
 #
 # ============================================================================================= #
@@ -64,6 +65,51 @@ keycloak_defaults:
     - '--metrics-enabled=true'
 
   #endregion --- [ Build ] -------------------------------------------------------------------- #
+
+  #region ------ [ Runtime ] ------------------------------------------------------------------ #
+
+  # The URL users and the load balancer reach Keycloak by; every token and redirect is issued
+  # under it. It is the load balancer's name, which changes with every stack, so the playbook
+  # supplies it.
+  hostname: ''
+
+  # The load balancer terminates the client connection, so Keycloak reads the scheme and host
+  # from X-Forwarded-* headers; only the load balancer and the host itself reach the HTTP port
+  # (terraform/aws.tfvars). Keycloak trusts the leftmost X-Forwarded-For entry, which a client can
+  # write, so the load balancer removes that header (xff_header_processing_mode) and Keycloak
+  # records the load balancer's address rather than one a client chose.
+  proxy_headers: 'xforwarded'
+  http_port: 8080
+  # Health and metrics answer here, apart from the user-facing port; written to keycloak.conf.
+  management_port: 9000
+
+  service: 'keycloak'
+
+  # The database every node shares. It is also how the nodes find each other: the 26.x default
+  # cache stack, jdbc-ping, registers each node in it. Its address and credentials change with
+  # every stack, so the playbook supplies them.
+  database:
+    host: ''
+    port: 5432
+    name: ''
+    username: ''
+    password: ''
+    # A db.t4g.micro admits about eighty connections; Keycloak's default pool of 100 per node
+    # would let two nodes exhaust it under load.
+    pool_max_size: 20
+
+  # Created only while the master realm has no administrator: by the first node to start against
+  # an empty database. Every later start ignores it.
+  administrator:
+    username: 'admin'
+    password: ''
+
+  # The first start creates the schema before it reports ready.
+  timeouts:
+    ready_attempts: 60
+    ready_pause_seconds: 5
+
+  #endregion --- [ Runtime ] ------------------------------------------------------------------ #
 
   #region ------ [ fapolicyd ] ---------------------------------------------------------------- #
 

@@ -63,3 +63,8 @@ Export `GITHUB_REPOSITORY_ID`, `GITHUB_RUN_ID` and `GITHUB_REPOSITORY` plus AWS 
 point `-i` at `aws_ec2.yml` while the instances still exist. Set `ENVIRONMENT` if the deployment is
 not the default `test`. The play asserts its ownership contract, so a run whose tags do not match
 fails closed.
+
+The play also needs the stack's endpoints as extra-vars: `keycloak_database` (address, port,
+master_user_secret_arn), `keycloak_load_balancer_dns` and `keycloak_target_group_arn`. The
+workflow's "Read the stack's endpoints" step builds them from `terraform output -json`; a local run
+builds the same file and passes it with `--extra-vars @endpoints.json`.

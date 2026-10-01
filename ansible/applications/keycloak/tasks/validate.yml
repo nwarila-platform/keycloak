@@ -18,15 +18,18 @@
 
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to continue: install_root must be one directory directly under /opt and account
-      one lower-case system account name, because state=absent removes both. Got install_root
+      Refusing to continue: install_root must be one directory directly under /opt, account one
+      lower-case system account name, and service and fapolicyd_trust_file plain names, because
+      state=absent removes each by them. Got install_root
       '{{ keycloak_running.install_root | default('') }}', account
-      '{{ keycloak_running.account | default('') }}', fapolicyd_trust_file
+      '{{ keycloak_running.account | default('') }}', service
+      '{{ keycloak_running.service | default('') }}', fapolicyd_trust_file
       '{{ keycloak_running.fapolicyd_trust_file | default('') }}'.
     quiet: true
     that:
       - keycloak_running.install_root | default('') is match('^/opt/[A-Za-z0-9][A-Za-z0-9._-]*$')
       - keycloak_running.account | default('') is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - keycloak_running.service | default('') is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
       - >-
         keycloak_running.fapolicyd_trust_file | default('')
         is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
@@ -59,3 +62,34 @@
       - keycloak_running.installer.sha256 | default('') is match('^[0-9a-f]{64}$')
 
 #endregion --- [ Validate: The Pinned Installer ] --------------------------------------------- #
+
+#region ------ [ Validate: The Runtime Inputs ] ----------------------------------------------- #
+
+# check: the hostname is every token's issuer and the database is the cluster's only shared
+# state, so neither may silently default. Neither password is echoed.
+- name: 'VALIDATE | Require The Hostname, Database And Administrator'
+  when: (state | default('present') | string | lower | trim) == 'present'
+
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to deploy: the playbook must supply hostname (an http or https URL with no path),
+      database.host, database.name, database.username and database.password, and
+      administrator.password; database.port and database.pool_max_size must be positive
+      integers. Got hostname '{{ keycloak_running.hostname | default('') }}', database host
+      '{{ keycloak_running.database.host | default('') }}', port
+      '{{ keycloak_running.database.port | default('') }}', name
+      '{{ keycloak_running.database.name | default('') }}', username
+      '{{ keycloak_running.database.username | default('') }}'.
+    quiet: true
+    that:
+      - keycloak_running.hostname | default('') is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
+      - keycloak_running.database.host | default('') is match('^[A-Za-z0-9.-]+$')
+      - keycloak_running.database.port | default(0) | int > 0
+      - keycloak_running.database.name | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.username | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.password | default('') | length > 0
+      - keycloak_running.database.pool_max_size | default(0) | int > 0
+      - keycloak_running.administrator.username | default('') | length > 0
+      - keycloak_running.administrator.password | default('') | length > 0
+
+#endregion --- [ Validate: The Runtime Inputs ] ----------------------------------------------- #

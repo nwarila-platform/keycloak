@@ -2,9 +2,10 @@
 """Validate the credential-free dependency declaration contract.
 
 Adapted from nwarila-platform/nessus's validator, itself adapted from secure-wazuh's, which
-introduced the dependencies/ layout. This repository adds two closures: the standing estate the
-framework consumes but never creates (aws/estate.yml), and the default IAM quota of ten managed
-policies per role. Its live IAM has never been exported, so every recorded version is null.
+introduced the dependencies/ layout. Like nessus's, it closes the playbook against the declared
+artifacts. This repository adds two more closures: the standing estate the framework consumes but
+never creates (aws/estate.yml), and the default IAM quota of ten managed policies per role. Its
+live IAM has never been exported, so every recorded version is null.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT = REPO_ROOT / "dependencies"
 AWS = ROOT / "aws"
+PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "keycloak-aws.yml"
+ROLE_DEFAULTS = REPO_ROOT / "ansible" / "applications" / "keycloak" / "defaults" / "main.yml"
 
 TOKENS = (
     "<account-id>",
@@ -304,6 +307,27 @@ def check_artifacts() -> list[dict[str, Any]]:
     return objects
 
 
+def check_playbook_pins(objects: list[dict[str, Any]]) -> None:
+    """The playbook consumes exactly what artifacts.yml declares, at the digests it declares."""
+    role_vars = None
+    for play in load_yaml(PLAYBOOK):
+        for role in play.get("roles", []) or []:
+            if isinstance(role, dict) and role.get("role") == "keycloak":
+                role_vars = role["vars"]["keycloak"]
+    require(role_vars is not None, f"{rel(PLAYBOOK)}: no keycloak role declaration found")
+    installer = role_vars["installer"]
+    key_template = load_yaml(ROLE_DEFAULTS)["keycloak_defaults"]["installer"]["key"]
+    installer_key = key_template.replace("<version>", str(installer["version"]))
+    by_key = {item["key"]: item for item in objects}
+    require(installer_key in by_key, f"the playbook installs {installer_key!r}, which artifacts.yml does not declare")
+    require(by_key[installer_key]["sha256"] == installer["sha256"], "installer sha256 differs between the playbook and artifacts.yml")
+    require(by_key[installer_key]["bucket"] == "registry://aws/s3/apprepo", "the installer must come from the application repository")
+    text = PLAYBOOK.read_text(encoding="utf-8")
+    for item in objects:
+        if "sha256" not in item:
+            require(item["key"] in text, f"secret {item['key']} is declared but the playbook never reads it")
+
+
 def check_authorization(objects: list[dict[str, Any]]) -> None:
     """The runner may read every declared object and nothing else under this repository's prefix."""
     statements = load_json(AWS / "policies" / f"{PREFIX}_runner_s3.json")["Statement"]
@@ -396,13 +420,14 @@ def main() -> int:
         roles = check_declarations()
         check_manifest(roles)
         objects = check_artifacts()
+        check_playbook_pins(objects)
         check_authorization(objects)
         check_estate()
         check_registry_closure()
     except ContractError as error:
         print(f"dependency check failed: {error}", file=sys.stderr)
         return 1
-    print("dependency check passed: declarations, metadata, closure, quota, estate, authorization, literals and integrity are valid")
+    print("dependency check passed: declarations, metadata, closure, quota, estate, pins, authorization, literals and integrity are valid")
     return 0
 
 

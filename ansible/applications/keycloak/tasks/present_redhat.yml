@@ -2,12 +2,14 @@
 # File: '{{ role_path }}/tasks/present_redhat.yml'
 # --- [ Description ] ------------------------------------------------------------------------- #
 #
-# Installs Keycloak at the pinned version on a CIS-hardened RHEL 8 host and builds it. It starts
-# nothing: there is no database to start it against yet.
+# Installs Keycloak at the pinned version on a CIS-hardened RHEL 8 host, builds it, and runs it
+# as a service against the shared database, where it joins every other node in one cluster.
 #
 # BEGIN reads the host. PROCESS converges the runtime, the account, the unpacked tree, its
-# fapolicyd trust and the build, each writing only on difference. END reads the version back from
-# Keycloak itself and is ungated, so a converged host proves what a fresh one does.
+# fapolicyd trust and the build, then the configuration, the environment and the unit, each
+# writing only on difference, and starts the service. END reads the version back from Keycloak
+# itself and the service's state and readiness from the host, and is ungated, so a converged
+# host proves what a fresh one does.
 #
 # ============================================================================================= #
 ---
@@ -553,7 +555,10 @@
         remote_src: false
         unsafe_writes: false
 
+    # The service starts from this link, so moving it is a restart.
     - name: 'PROCESS | Point The current Link At This Version'
+      notify: 'keycloak-restart-required'
+
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
         follow: false
@@ -608,9 +613,118 @@
 
 #endregion --- [ Process: Install And Build Keycloak ] ---------------------------------------- #
 
-#region ------ [ End: Prove The Pinned Version Is Built ] ------------------------------------- #
+#region ------ [ Process: Configure And Start Keycloak ] -------------------------------------- #
 
-- name: 'END | Prove The Pinned Version Is Built As Declared'
+- name: 'PROCESS | Configure And Start Keycloak'
+  vars:
+    __home__: "{{ keycloak_running.install_root }}/{{ keycloak_running.installer.version }}"
+  block:
+
+    # Group-readable so the account can read it; it holds no secret.
+    - name: 'PROCESS | Write The Keycloak Configuration'
+      notify: 'keycloak-restart-required'
+
+      ansible.builtin.template:
+        backup: false
+        dest: "{{ __home__ }}/conf/keycloak.conf"
+        follow: false
+        force: true
+        group: "{{ keycloak_running.account }}"
+        lstrip_blocks: false
+        mode: '0640'
+        newline_sequence: '\n'
+        output_encoding: 'utf-8'
+        owner: 'root'
+        src: 'keycloak.conf.j2'
+        trim_blocks: true
+        unsafe_writes: false
+
+    # The two passwords. Root-only: systemd reads it before it drops to the account.
+    - name: 'PROCESS | Write The Service Environment'
+      no_log: true
+      notify: 'keycloak-restart-required'
+
+      ansible.builtin.template:
+        backup: false
+        dest: "{{ keycloak_running.install_root }}/keycloak.env"
+        follow: false
+        force: true
+        group: 'root'
+        lstrip_blocks: false
+        mode: '0600'
+        newline_sequence: '\n'
+        output_encoding: 'utf-8'
+        owner: 'root'
+        src: 'keycloak.env.j2'
+        trim_blocks: true
+        unsafe_writes: false
+
+    - name: 'PROCESS | Write The Service Unit'
+      notify: 'keycloak-restart-required'
+
+      ansible.builtin.template:
+        backup: false
+        dest: "/etc/systemd/system/{{ keycloak_running.service }}.service"
+        follow: false
+        force: true
+        group: 'root'
+        lstrip_blocks: false
+        mode: '0644'
+        newline_sequence: '\n'
+        output_encoding: 'utf-8'
+        owner: 'root'
+        src: 'keycloak.service.j2'
+        trim_blocks: true
+        unsafe_writes: false
+
+    # The restart handler reloads systemd and starts a stopped service, so on a first converge
+    # it is the one start; on a converged host nothing was notified and nothing restarts.
+    - name: 'PROCESS | Apply A Changed Configuration'
+      ansible.builtin.meta: 'flush_handlers'
+
+    - name: 'PROCESS | Enable And Start Keycloak'
+      ansible.builtin.systemd_service:
+        daemon_reexec: false
+        daemon_reload: false
+        enabled: true
+        force: false
+        masked: false
+        name: "{{ keycloak_running.service }}"
+        no_block: false
+        scope: 'system'
+        state: 'started'
+
+    # Unmeasured: the bound allows the first start to create the schema on a db.t4g.micro.
+    - name: 'PROCESS | Wait Until Keycloak Reports Ready'
+      changed_when: false
+      check_mode: false
+      delay: "{{ keycloak_running.timeouts.ready_pause_seconds | int }}"
+      register: '__keycloak_ready__'
+      retries: "{{ keycloak_running.timeouts.ready_attempts | int }}"
+      until:
+        - __keycloak_ready__.status | default(0) == 200
+        - (__keycloak_ready__.json | default({})).status | default('') == 'UP'
+
+      ansible.builtin.uri:
+        follow_redirects: 'safe'
+        force: false
+        force_basic_auth: false
+        method: 'GET'
+        return_content: true
+        status_code: [ 200 ]
+        timeout: 10
+        unredirected_headers: []
+        url: "http://127.0.0.1:{{ keycloak_running.management_port }}/health/ready"
+        use_gssapi: false
+        use_netrc: true
+        use_proxy: false
+        validate_certs: true
+
+#endregion --- [ Process: Configure And Start Keycloak ] -------------------------------------- #
+
+#region ------ [ End: Prove Keycloak Is Built And Serving ] ---------------------------------- #
+
+- name: 'END | Prove Keycloak Is Built As Declared And Serving'
   vars:
     __current__: "{{ keycloak_running.install_root }}/current"
     __record__: >-
@@ -648,6 +762,42 @@
         get_selinux_context: false
         path: "{{ __current__ }}/.build-options"
 
+    # rc-contract: systemctl(1) is-enabled and is-active exit 0 only for an enabled or active unit.
+    - name: 'END | Read The Service State'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      loop: [ 'is-enabled', 'is-active' ]
+      loop_control: { label: "{{ item }}" }
+      register: '__keycloak_service_state__'
+
+      ansible.builtin.command:
+        argv: [ 'systemctl', "{{ item }}", "{{ keycloak_running.service }}" ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Read Readiness From Keycloak'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: '__keycloak_health__'
+
+      ansible.builtin.uri:
+        follow_redirects: 'safe'
+        force: false
+        force_basic_auth: false
+        method: 'GET'
+        return_content: true
+        status_code: [ 200 ]
+        timeout: 10
+        unredirected_headers: []
+        url: "http://127.0.0.1:{{ keycloak_running.management_port }}/health/ready"
+        use_gssapi: false
+        use_netrc: true
+        use_proxy: false
+        validate_certs: true
+
     - name: 'END | Require The Pinned Version Built With The Declared Options'
       ansible.builtin.assert:
         fail_msg: >-
@@ -663,4 +813,18 @@
             in __keycloak_version__.stdout_lines
           - (__keycloak_record__.stat.checksum | default('')) == (__record__ | hash('sha1'))
 
-#endregion --- [ End: Prove The Pinned Version Is Built ] ------------------------------------- #
+    - name: 'END | Require Keycloak Enabled, Running And Ready'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Keycloak is not serving. systemctl answered
+          {{ __keycloak_service_state__.results | map(attribute='stdout') | list }} for
+          is-enabled and is-active; /health/ready answered HTTP
+          {{ __keycloak_health__.status | default('(no answer)') }}
+          {{ (__keycloak_health__.json | default({})).status | default('') }}.
+        quiet: true
+        that:
+          - __keycloak_service_state__.results | map(attribute='rc') | list == [0, 0]
+          - __keycloak_health__.status | default(0) == 200
+          - (__keycloak_health__.json | default({})).status | default('') == 'UP'
+
+#endregion --- [ End: Prove Keycloak Is Built And Serving ] ---------------------------------- #

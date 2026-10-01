@@ -2,11 +2,16 @@
 # File: 'ansible/playbooks/keycloak-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Brings the ephemeral EC2 instances from "the API says they exist" to Keycloak installed and
-# built on two CIS-hardened RHEL 8 hosts. Nothing is started: the database arrives in a later stage.
+# Brings the ephemeral EC2 instances from "the API says they exist" to one Keycloak cluster: two
+# CIS-hardened RHEL 8 nodes in two zones, sharing an RDS PostgreSQL database and served through an
+# internal application load balancer.
 #
-# The inventory decides how the host is reached; this play's ordered credential sets decide who
+# The inventory decides how each host is reached; this play's ordered credential sets decide who
 # logs on. A new image answers only as its image account, with the launch key.
+#
+# The workflow passes what Terraform built -- the database's address and the ARN of the secret
+# RDS keeps its master credentials in, and the load balancer's name -- as extra-vars, as it does
+# the account and the region, so the play and the stack cannot disagree.
 #
 # Runs from the composed tree: the workflow overlays this repository onto the pinned framework
 # and uses its configuration, role search path, connection defaults, and explicit fact gathering.
@@ -15,20 +20,22 @@
 ---
 
 #region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
-# The inventory already filters to this run's instance by its framework-set tags. This guards the
-# two states that filter cannot cover: an empty result, where nothing launched or nothing tagged,
-# and an invocation that never said which account it is deploying into.
+# The inventory already filters to this run's instances by their framework-set tags. This guards
+# what that filter cannot: a topology that is not the two-node cluster, and an invocation that
+# never said which account or which stack it is configuring.
 
 - name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
   hosts: 'localhost'
   tasks:
-    - name: 'INVENTORY | Require At Least One Filtered Host'
+    # Two nodes, because a cluster of one proves nothing about losing a node.
+    - name: 'INVENTORY | Require The Two-Node Cluster'
       ansible.builtin.assert:
-        that: groups['keycloak_servers'] | default([]) | length >= 1
+        that: groups['keycloak_servers'] | default([]) | length == 2
         fail_msg: >-
-          Refusing to configure: the 'keycloak_servers' inventory group is empty. The dynamic EC2
-          inventory found no running instance tagged for this run -- a zero-host inventory is not
-          a successful deployment proof.
+          Refusing to configure: the 'keycloak_servers' inventory group holds
+          {{ groups['keycloak_servers'] | default([]) | length }} host(s), not the two nodes
+          terraform/aws.tfvars declares. The dynamic EC2 inventory found a different topology
+          tagged for this run.
         quiet: true
 
     # Account-derived values are passed EXPLICITLY on the invocation, never read from the
@@ -44,6 +51,21 @@
           aws_account_id and aws_region must be provided as extra-vars. The aws-deploy workflow
           passes them from its own environment (the same values the OIDC role ARN and region
           use); a local run must pass both explicitly.
+        quiet: true
+
+    - name: 'INVENTORY | Require The Stack Endpoints'
+      ansible.builtin.assert:
+        that:
+          - keycloak_database.address | default('') is match('^[A-Za-z0-9.-]+$')
+          - keycloak_database.port | default(0) | int > 0
+          - keycloak_database.master_user_secret_arn | default('') is match('^arn:aws:secretsmanager:')
+          - keycloak_load_balancer_dns | default('') is match('^[A-Za-z0-9.-]+$')
+          - keycloak_target_group_arn | default('') is match('^arn:aws:elasticloadbalancing:')
+        fail_msg: >-
+          keycloak_database (address, port, master_user_secret_arn), keycloak_load_balancer_dns
+          and keycloak_target_group_arn must be provided as extra-vars. The aws-deploy workflow
+          reads them from Terraform's outputs after apply; a local run reads the same outputs and
+          passes them explicitly.
         quiet: true
 
 #endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
@@ -87,14 +109,113 @@
 #endregion --- [ Play: Prepare The Hosts ] ---------------------------------------------------- #
 
 #region ------ [ Play: Keycloak ] ------------------------------------------------------------- #
-# Tagged so a run can build the host alone (--skip-tags products) when what is under test is the
+# One node at a time: the first to start against the empty database creates its schema and the
+# first administrator, and the second joins a cluster that already serves. Keycloak supports
+# rolling through a patch release of the same major.minor that 'kc.sh update-compatibility'
+# accepts, which is what this play does. Any other version bump must stop every node before this
+# play runs, because the first node to start migrates the schema the others still run against.
+#
+# Tagged so a run can build the hosts alone (--skip-tags products) when what is under test is the
 # ground Keycloak stands on.
 
 - name: 'PLAY | Keycloak (ephemeral AWS)'
   hosts: 'keycloak_servers'
   any_errors_fatal: true
   become: true
+  serial: 1
   tags: ['products']
+  vars:
+    # Stated once for the host firewall, the role and the proof. 7800 carries the cluster's cache
+    # traffic and 57800 its failure detection (7800 + 50000).
+    <<: &keycloak_service
+      keycloak_http_port: 8080
+      keycloak_management_port: 9000
+      keycloak_cluster_ports: [ 7800, 57800 ]
+      keycloak_service_name: 'keycloak'
+      keycloak_administrator: 'admin'
+
+    # RDS keeps the master credentials in Secrets Manager and rotates them; they are read here, on
+    # the controller, when the role needs them, and never written to the log.
+    keycloak_database_credentials: >-
+      {{ lookup('amazon.aws.secretsmanager_secret', keycloak_database.master_user_secret_arn,
+                region=aws_region) | from_json }}
+
+  #region ------ [ Pre-Tasks: The Host Firewall Is nftables ] -------------------------------- #
+  # The fleet decision nessus records: the host firewall is nftables itself, not firewalld. The
+  # security groups already decide which peers reach each port; this ruleset closes everything
+  # else on the host.
+  pre_tasks:
+    - name: 'PROCESS | Install nftables'
+      ansible.builtin.dnf:
+        name: 'nftables'
+        state: 'present'
+
+    - name: 'PROCESS | Write The Host nftables Ruleset'
+      register: '__keycloak_nftables_ruleset__'
+      vars:
+        __keycloak_open__: "{{ (state | default('present') | string | lower | trim) != 'absent' }}"
+      ansible.builtin.copy:
+        content: |
+          #!/usr/sbin/nft -f
+          # Managed by ansible/playbooks/keycloak-aws.yml; a local edit is overwritten.
+          flush ruleset
+
+          table inet filter {
+              chain input {
+                  type filter hook input priority 0; policy drop;
+                  ct state established,related accept
+                  ct state invalid drop
+                  iif "lo" accept
+                  ip saddr 127.0.0.0/8 drop
+                  ip6 saddr ::1 drop
+                  meta l4proto { icmp, ipv6-icmp } accept
+                  tcp dport {{ ansible_port | default(22) }} ct state new limit rate 25/second burst 50 packets accept
+          {% if __keycloak_open__ | bool %}
+                  tcp dport { {{ keycloak_http_port }}, {{ keycloak_management_port }} } ct state new limit rate 25/second burst 50 packets accept
+                  tcp dport { {{ keycloak_cluster_ports | join(', ') }} } ct state new limit rate 25/second burst 50 packets accept
+          {% endif %}
+              }
+              chain forward {
+                  type filter hook forward priority 0; policy drop;
+              }
+              chain output {
+                  type filter hook output priority 0; policy accept;
+              }
+          }
+        dest: '/etc/sysconfig/nftables.conf'
+        group: 'root'
+        mode: '0600'
+        owner: 'root'
+        validate: '/usr/sbin/nft -c -f %s'
+
+    # Stopping firewalld removes its own rules, so until nftables loads a moment later the host
+    # filters nothing -- which cannot drop the session running this. Masked, so nothing starts it
+    # again behind this ruleset.
+    - name: 'PROCESS | Stop And Mask firewalld'
+      ansible.builtin.systemd_service:
+        masked: true
+        name: 'firewalld'
+        state: 'stopped'
+
+    # Unmasked as well: the CIS remediation for running firewalld masks nftables, and enabling a
+    # masked unit fails after firewalld is already stopped, leaving the host unfiltered.
+    - name: 'PROCESS | Enable And Start nftables'
+      register: '__keycloak_nftables_service__'
+      ansible.builtin.systemd_service:
+        enabled: true
+        masked: false
+        name: 'nftables'
+        state: 'started'
+
+    - name: 'PROCESS | Load A Changed Ruleset'
+      when:
+        - __keycloak_nftables_ruleset__ is changed
+        - __keycloak_nftables_service__ is not changed
+      ansible.builtin.systemd_service:
+        name: 'nftables'
+        state: 'reloaded'
+
+  #endregion --- [ Pre-Tasks: The Host Firewall Is nftables ] -------------------------------- #
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
@@ -105,12 +226,559 @@
           # What is installed, stated where a reader can see it. The digest is the SHA-256 the
           # vendor publishes for keycloak-26.7.5.tar.gz on its GitHub release; the application
           # repository carries those bytes at the key the role composes from the version. A
-          # version bump is these two values.
+          # version bump is these two values and dependencies/aws/artifacts.yml.
           installer:
             bucket: "{{ aws_account_id }}-apprepo"
             version: '26.7.5'
             sha256: '87d680d13cf4600d232ca0433a2553c57ebf03e56f7718fc0d03a1a8705497c8'
 
+          # The load balancer is internal and TLS-less: every client is inside the VPC, and
+          # Keycloak admits plain HTTP from private addresses. TLS arrives with a certificate.
+          hostname: "http://{{ keycloak_load_balancer_dns }}"
+          http_port: "{{ keycloak_http_port }}"
+          management_port: "{{ keycloak_management_port }}"
+          service: "{{ keycloak_service_name }}"
+
+          database:
+            host: "{{ keycloak_database.address }}"
+            port: "{{ keycloak_database.port }}"
+            name: 'keycloak'
+            username: "{{ keycloak_database_credentials.username }}"
+            password: "{{ keycloak_database_credentials.password }}"
+
+          administrator:
+            username: "{{ keycloak_administrator }}"
+            password: >-
+              {{ lookup('secret', 's3://' ~ aws_account_id
+                 ~ '-ansible/applications/keycloak/administrator-password.txt') | trim }}
+
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Keycloak ] ------------------------------------------------------------- #
+
+#region ------ [ Play: Prove The Cluster Survives Losing A Node (opt-in) ] -------------------- #
+# What makes this deployment highly available, proved rather than assumed:
+#   1. the nodes see each other: each node's cluster view, in its current run, counts both;
+#   2. the load balancer serves from both zones: it reports both targets healthy, and a token is
+#      issued through it from each node;
+#   3. state moves between nodes: a realm changed on one node is read back changed on the other,
+#      which only the cluster's cache invalidation makes true;
+#   4. losing a node loses nothing: with the first node stopped, the load balancer answers ten
+#      requests in a row, and a session born on the stopped node still refreshes;
+#   5. a node rejoins: the first node starts again, both targets are healthy and both nodes count
+#      two once more.
+#
+# It writes a throwaway realm and stops a node, so it is tagged 'never': an ordinary converge, and
+# the second converge that must report no change, never run it. The workflow asks for it by tag.
+
+- name: 'PLAY | Prove The Cluster Survives Losing A Node (opt-in)'
+  hosts: 'keycloak_servers'
+  any_errors_fatal: true
+  become: true
+  tags: ['never', 'ha_proof']
+  vars:
+    <<: *keycloak_service
+    __alb__: "http://{{ keycloak_load_balancer_dns }}"
+    __local__: "http://127.0.0.1:{{ keycloak_http_port }}"
+    __ready__: "http://127.0.0.1:{{ keycloak_management_port }}/health/ready"
+    __first__: "{{ groups['keycloak_servers'][0] }}"
+    __second__: "{{ groups['keycloak_servers'][1] }}"
+    __realm__: 'ha-proof'
+    __token_path__: '/realms/master/protocol/openid-connect/token'
+    __admin_password__: >-
+      {{ lookup('secret', 's3://' ~ aws_account_id
+         ~ '-ansible/applications/keycloak/administrator-password.txt') | trim }}
+
+  tasks:
+
+    #region ------ [ Proof: The Nodes See Each Other ] ---------------------------------------- #
+
+    # The service's current run only: a node restarted outside the cluster would otherwise still
+    # show an earlier run's view of two.
+    - name: 'END | Read The Service Run Each Node Is In'
+      changed_when: false
+      register: '__proof_invocation__'
+
+      ansible.builtin.command:
+        argv: [ 'systemctl', 'show', '--property', 'InvocationID', '--value', "{{ keycloak_service_name }}" ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # rc-contract: journalctl(1) exits 1 when --grep matches nothing; the assert below names that
+    # case rather than a bare non-zero exit. ISPN000094 is a new view, ISPN000093 a merged one.
+    - name: 'END | Read The Last Cluster View In That Run'
+      changed_when: false
+      failed_when: false
+      register: '__proof_view__'
+
+      ansible.builtin.command:
+        argv: [ 'journalctl', "_SYSTEMD_INVOCATION_ID={{ __proof_invocation__.stdout }}", '--output', 'cat', '--no-pager', '--grep', 'ISPN00009[34]' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Require Each Node To Count Both Nodes'
+      vars:
+        __last__: "{{ __proof_view__.stdout_lines | last | default('') }}"
+      ansible.builtin.assert:
+        fail_msg: >-
+          {{ inventory_hostname }} does not see the whole cluster. Its last cluster view in its
+          current run was '{{ __last__ }}'; two members were expected.
+        quiet: true
+        that: __last__ is search('\\(2\\) \\[')
+
+    #endregion --- [ Proof: The Nodes See Each Other ] ---------------------------------------- #
+
+    #region ------ [ Proof: The Load Balancer Serves From Both Zones ] ------------------------ #
+
+    # Read on the controller with the runner's credentials: the guests hold none. Unmeasured: the
+    # bound covers two passing health checks ten seconds apart, with margin.
+    - name: 'END | Wait Until The Load Balancer Reports Both Targets Healthy'
+      changed_when: false
+      delay: 10
+      delegate_to: 'localhost'
+      become: false
+      register: '__proof_targets__'
+      retries: 30
+      run_once: true
+      until: __proof_targets__.stdout | trim == '2'
+
+      ansible.builtin.command:
+        argv:
+          - 'aws'
+          - 'elbv2'
+          - 'describe-target-health'
+          - '--region'
+          - "{{ aws_region }}"
+          - '--target-group-arn'
+          - "{{ keycloak_target_group_arn }}"
+          - '--query'
+          - "length(TargetHealthDescriptions[?TargetHealth.State=='healthy'])"
+          - '--output'
+          - 'text'
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Obtain A Token Through The Load Balancer From Each Node'
+      changed_when: false
+      no_log: true
+      register: '__proof_alb_token__'
+
+      ansible.builtin.uri:
+        body:
+          client_id: 'admin-cli'
+          grant_type: 'password'
+          password: "{{ __admin_password__ }}"
+          username: "{{ keycloak_administrator }}"
+        body_format: 'form-urlencoded'
+        follow_redirects: 'safe'
+        force: false
+        force_basic_auth: false
+        method: 'POST'
+        return_content: true
+        status_code: [ 200 ]
+        timeout: 30
+        unredirected_headers: []
+        url: "{{ __alb__ }}{{ __token_path__ }}"
+        use_gssapi: false
+        use_netrc: true
+        use_proxy: false
+        validate_certs: true
+
+    - name: 'END | Require A Token Through The Load Balancer'
+      ansible.builtin.assert:
+        fail_msg: "{{ inventory_hostname }} received no access token through {{ __alb__ }}."
+        quiet: true
+        that: (__proof_alb_token__.json | default({})).access_token | default('') | length > 0
+
+    #endregion --- [ Proof: The Load Balancer Serves From Both Zones ] ------------------------ #
+
+    #region ------ [ Proof: State Moves Between Nodes ] --------------------------------------- #
+    # Each node is asked directly, on its own loopback, so the load balancer cannot route both
+    # questions to the same node. The second node caches the realm when it first reads it; only a
+    # cluster invalidation from the first node makes its second read see the change.
+
+    - name: 'PROCESS | Prove A Change On One Node Is Seen On The Other'
+      run_once: true
+      no_log: true
+      block:
+
+        - name: 'BEGIN | Obtain An Administrator Token On Each Node'
+          changed_when: false
+          delegate_to: "{{ item }}"
+          loop: [ "{{ __first__ }}", "{{ __second__ }}" ]
+          register: '__proof_admin__'
+
+          ansible.builtin.uri:
+            body:
+              client_id: 'admin-cli'
+              grant_type: 'password'
+              password: "{{ __admin_password__ }}"
+              username: "{{ keycloak_administrator }}"
+            body_format: 'form-urlencoded'
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'POST'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}{{ __token_path__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'PROCESS | Remove A Proof Realm A Previous Run Left'
+          changed_when: __proof_stale__.status == 204
+          delegate_to: "{{ __first__ }}"
+          register: '__proof_stale__'
+
+          ansible.builtin.uri:
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'DELETE'
+            return_content: false
+            status_code: [ 204, 404 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'PROCESS | Create The Proof Realm On The First Node'
+          changed_when: true
+          delegate_to: "{{ __first__ }}"
+
+          ansible.builtin.uri:
+            body: { realm: "{{ __realm__ }}", enabled: true, displayName: 'before' }
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body_format: 'json'
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'POST'
+            return_content: false
+            status_code: [ 201 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'BEGIN | Read The Realm On The Second Node, Which Caches It'
+          changed_when: false
+          delegate_to: "{{ __second__ }}"
+          register: '__proof_before__'
+
+          ansible.builtin.uri:
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'GET'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'PROCESS | Change The Realm On The First Node'
+          changed_when: true
+          delegate_to: "{{ __first__ }}"
+
+          ansible.builtin.uri:
+            body: { displayName: 'after' }
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body_format: 'json'
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'PUT'
+            return_content: false
+            status_code: [ 204 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'END | Read The Realm On The Second Node Again'
+          changed_when: false
+          delegate_to: "{{ __second__ }}"
+          register: '__proof_after__'
+
+          ansible.builtin.uri:
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'GET'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'END | Require The Second Node To See The Change'
+          ansible.builtin.assert:
+            fail_msg: >-
+              The second node read '{{ __proof_before__.json.displayName | default('') }}' and then
+              '{{ __proof_after__.json.displayName | default('') }}'; 'before' then 'after' was
+              expected. A stale second read means the cluster did not invalidate its cache.
+            quiet: true
+            that:
+              - __proof_before__.json.displayName == 'before'
+              - __proof_after__.json.displayName == 'after'
+
+        - name: 'PROCESS | Remove The Proof Realm'
+          changed_when: true
+          delegate_to: "{{ __first__ }}"
+
+          ansible.builtin.uri:
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'DELETE'
+            return_content: false
+            status_code: [ 204 ]
+            timeout: 60
+            unredirected_headers: []
+            url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+    #endregion --- [ Proof: State Moves Between Nodes ] --------------------------------------- #
+
+    #region ------ [ Proof: Losing A Node Loses Nothing ] ------------------------------------- #
+
+    - name: 'PROCESS | Prove The Load Balancer Survives Losing The First Node'
+      run_once: true
+      block:
+
+        # Born on the node about to be stopped, by its own loopback, so the refresh below can only
+        # succeed if the session outlives the node that issued it.
+        - name: 'BEGIN | Open A Session On The First Node Before The Loss'
+          changed_when: false
+          delegate_to: "{{ __first__ }}"
+          no_log: true
+          register: '__proof_session__'
+
+          ansible.builtin.uri:
+            body:
+              client_id: 'admin-cli'
+              grant_type: 'password'
+              password: "{{ __admin_password__ }}"
+              username: "{{ keycloak_administrator }}"
+            body_format: 'form-urlencoded'
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'POST'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __local__ }}{{ __token_path__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+        - name: 'PROCESS | Stop Keycloak On The First Node'
+          delegate_to: "{{ __first__ }}"
+
+          ansible.builtin.systemd_service:
+            daemon_reexec: false
+            daemon_reload: false
+            force: false
+            masked: false
+            name: "{{ keycloak_service_name }}"
+            no_block: false
+            scope: 'system'
+            state: 'stopped'
+
+        # Ten answers in a row from the public discovery document, which needs no credential: a
+        # request routed to the stopped node fails the attempt, so a pass means the load balancer
+        # has taken it out of service. Unmeasured: the bound covers two failed health checks ten
+        # seconds apart, with margin.
+        - name: 'END | Require Ten Answers In A Row Through The Load Balancer'
+          changed_when: false
+          delay: 10
+          delegate_to: "{{ __second__ }}"
+          register: '__proof_failover__'
+          retries: 12
+          until: __proof_failover__.rc == 0
+
+          ansible.builtin.command:
+            argv:
+              - 'bash'
+              - '-c'
+              - >-
+                for attempt in 1 2 3 4 5 6 7 8 9 10; do
+                  curl --fail --silent --show-error --max-time 5 --output /dev/null "$1" || exit 1;
+                done
+              - 'failover-probe'
+              - "{{ __alb__ }}/realms/master/.well-known/openid-configuration"
+            expand_argument_vars: false
+            stdin_add_newline: true
+            strip_empty_ends: true
+
+        - name: 'END | Refresh The Session Born On The Stopped Node'
+          changed_when: false
+          delegate_to: "{{ __second__ }}"
+          no_log: true
+
+          ansible.builtin.uri:
+            body:
+              client_id: 'admin-cli'
+              grant_type: 'refresh_token'
+              refresh_token: "{{ __proof_session__.json.refresh_token }}"
+            body_format: 'form-urlencoded'
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'POST'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 30
+            unredirected_headers: []
+            url: "{{ __alb__ }}{{ __token_path__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+      always:
+
+        - name: 'PROCESS | Start Keycloak On The First Node Again'
+          delegate_to: "{{ __first__ }}"
+
+          ansible.builtin.systemd_service:
+            daemon_reexec: false
+            daemon_reload: false
+            force: false
+            masked: false
+            name: "{{ keycloak_service_name }}"
+            no_block: false
+            scope: 'system'
+            state: 'started'
+
+        - name: 'END | Wait Until The First Node Reports Ready Again'
+          changed_when: false
+          delay: 5
+          delegate_to: "{{ __first__ }}"
+          register: '__proof_rejoined__'
+          retries: 60
+          until:
+            - __proof_rejoined__.status | default(0) == 200
+            - (__proof_rejoined__.json | default({})).status | default('') == 'UP'
+
+          ansible.builtin.uri:
+            follow_redirects: 'safe'
+            force: false
+            force_basic_auth: false
+            method: 'GET'
+            return_content: true
+            status_code: [ 200 ]
+            timeout: 10
+            unredirected_headers: []
+            url: "{{ __ready__ }}"
+            use_gssapi: false
+            use_netrc: true
+            use_proxy: false
+            validate_certs: true
+
+    #endregion --- [ Proof: Losing A Node Loses Nothing ] ------------------------------------- #
+
+    #region ------ [ Proof: A Node Rejoins ] -------------------------------------------------- #
+
+    - name: 'END | Wait Until The Load Balancer Reports Both Targets Healthy Again'
+      changed_when: false
+      delay: 10
+      delegate_to: 'localhost'
+      become: false
+      register: '__proof_targets_again__'
+      retries: 30
+      run_once: true
+      until: __proof_targets_again__.stdout | trim == '2'
+
+      ansible.builtin.command:
+        argv:
+          - 'aws'
+          - 'elbv2'
+          - 'describe-target-health'
+          - '--region'
+          - "{{ aws_region }}"
+          - '--target-group-arn'
+          - "{{ keycloak_target_group_arn }}"
+          - '--query'
+          - "length(TargetHealthDescriptions[?TargetHealth.State=='healthy'])"
+          - '--output'
+          - 'text'
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Read The Service Run Each Node Is In After The Rejoin'
+      changed_when: false
+      register: '__proof_rejoin_invocation__'
+
+      ansible.builtin.command:
+        argv: [ 'systemctl', 'show', '--property', 'InvocationID', '--value', "{{ keycloak_service_name }}" ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Read The Last Cluster View In That Run After The Rejoin'
+      changed_when: false
+      failed_when: false
+      register: '__proof_rejoin_view__'
+
+      ansible.builtin.command:
+        argv: [ 'journalctl', "_SYSTEMD_INVOCATION_ID={{ __proof_rejoin_invocation__.stdout }}", '--output', 'cat', '--no-pager', '--grep', 'ISPN00009[34]' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Require Both Nodes Counted Again'
+      vars:
+        __last__: "{{ __proof_rejoin_view__.stdout_lines | last | default('') }}"
+      ansible.builtin.assert:
+        fail_msg: >-
+          {{ inventory_hostname }} does not see the rejoined cluster. Its last cluster view in
+          its current run was '{{ __last__ }}'; two members were expected.
+        quiet: true
+        that: __last__ is search('\\(2\\) \\[')
+
+    #endregion --- [ Proof: A Node Rejoins ] -------------------------------------------------- #
+
+#endregion --- [ Play: Prove The Cluster Survives Losing A Node (opt-in) ] -------------------- #

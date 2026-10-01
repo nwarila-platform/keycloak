@@ -2,9 +2,9 @@
 # File: '{{ role_path }}/tasks/absent_redhat.yml'
 # --- [ Description ] ------------------------------------------------------------------------- #
 #
-# Reverses present_redhat.yml: every version under the install root and the current link, the
-# fapolicyd trust this role granted, and the account and its group. A host holding none of it
-# changes nothing, so a second absent run reports no change.
+# Reverses present_redhat.yml: the service and its unit, every version under the install root
+# and the current link, the fapolicyd trust this role granted, and the account and its group. A
+# host holding none of it changes nothing, so a second absent run reports no change.
 #
 # The Java runtime stays. It is a shared system package this role cannot tell it installed, and
 # removing it would take any package that requires it along.
@@ -30,6 +30,18 @@
         stdin_add_newline: true
         strip_empty_ends: true
 
+    - name: 'BEGIN | Read Whether The Service Unit Exists'
+      register: '__keycloak_unit__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+        get_selinux_context: false
+        path: "/etc/systemd/system/{{ keycloak_running.service }}.service"
+
     - name: 'BEGIN | Read Whether The fapolicyd Trust File Exists'
       register: '__keycloak_trust_file__'
 
@@ -48,6 +60,42 @@
 
 - name: 'PROCESS | Remove Keycloak'
   block:
+
+    # Stopped before its tree is removed, so nothing runs from files that are going.
+    - name: 'PROCESS | Stop And Disable Keycloak'
+      when: __keycloak_unit__.stat.exists | default(false)
+
+      ansible.builtin.systemd_service:
+        daemon_reexec: false
+        daemon_reload: false
+        enabled: false
+        force: false
+        masked: false
+        name: "{{ keycloak_running.service }}"
+        no_block: false
+        scope: 'system'
+        state: 'stopped'
+
+    - name: 'PROCESS | Remove The Service Unit'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        modification_time_format: '%Y%m%d%H%M.%S'
+        path: "/etc/systemd/system/{{ keycloak_running.service }}.service"
+        recurse: false
+        state: 'absent'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Forget The Removed Unit'
+      when: __keycloak_unit__.stat.exists | default(false)
+
+      ansible.builtin.systemd_service:
+        daemon_reexec: false
+        daemon_reload: true
+        force: false
+        no_block: false
+        scope: 'system'
 
     - name: 'PROCESS | Remove The Install Root'
       ansible.builtin.file:
@@ -121,6 +169,7 @@
       loop:
         - "{{ keycloak_running.install_root }}"
         - "/etc/fapolicyd/trust.d/{{ keycloak_running.fapolicyd_trust_file }}"
+        - "/etc/systemd/system/{{ keycloak_running.service }}.service"
       loop_control: { label: "{{ item }}" }
       register: '__keycloak_remains__'
 

@@ -1,0 +1,28 @@
+# Managed by the keycloak role; a local edit is overwritten on the next converge.
+[Unit]
+Description=Keycloak
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User={{ keycloak_running.account }}
+Group={{ keycloak_running.account }}
+EnvironmentFile={{ keycloak_running.install_root }}/keycloak.env
+Environment=JAVA_HOME={{ keycloak_running.java.home }}
+# /tmp and /var/tmp are noexec on a CIS host, so the JVM is given its own temporary directory.
+Environment=JAVA_OPTS_APPEND=-Djava.io.tmpdir={{ keycloak_running.install_root }}/current/data/tmp
+WorkingDirectory={{ keycloak_running.install_root }}/current
+ExecStart={{ keycloak_running.install_root }}/current/bin/kc.sh start --optimized
+# The JVM exits 143 when systemd stops it with SIGTERM.
+SuccessExitStatus=143
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
