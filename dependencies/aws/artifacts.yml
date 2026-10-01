@@ -1,0 +1,16 @@
+# This file declares consumption; IAM policy documents declare authorization.
+# Every object here is read on the CONTROLLER with the runner's credentials; the guest receives
+# a verified copy and never holds cloud credentials of its own.
+schema: aws-artifacts/v1
+artifacts:
+  # Byte-identical to keycloak-26.7.5.tar.gz on github.com/keycloak/keycloak/releases/tag/26.7.5;
+  # the digest is the one GitHub publishes for that release asset.
+  - bucket: "registry://aws/s3/apprepo"
+    key: "Keycloak/Keycloak/26.7.5/Keycloak_Keycloak_26.7.5_noarch.tar.gz"
+    sha256: 87d680d13cf4600d232ca0433a2553c57ebf03e56f7718fc0d03a1a8705497c8
+    access: controller-fetch
+# Secret values are never pinned by digest here: rotating one is an upload, not a commit.
+secrets:
+  - bucket: "registry://aws/s3/ansible"
+    key: "applications/keycloak/administrator-password.txt"
+    access: controller-secret-lookup

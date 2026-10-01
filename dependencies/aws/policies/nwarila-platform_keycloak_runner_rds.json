@@ -1,0 +1,115 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "rds:DescribeDBInstances",
+        "rds:ListTagsForResource"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:rds:<region>:<account-id>:db:*",
+      "Sid": "DescribeDatabases"
+    },
+    {
+      "Action": "rds:CreateDBInstance",
+      "Condition": {
+        "Bool": {
+          "rds:ManageMasterUserPassword": "true",
+          "rds:PubliclyAccessible": "false",
+          "rds:StorageEncrypted": "true"
+        },
+        "Null": {
+          "aws:RequestTag/CommitSha": "false",
+          "aws:RequestTag/Environment": "false",
+          "aws:RequestTag/RunId": "false"
+        },
+        "NumericLessThanEquals": {
+          "rds:StorageSize": "20"
+        },
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "Terraform",
+          "aws:RequestTag/Repository": "nwarila-platform/keycloak",
+          "aws:RequestTag/RepositoryId": "<repository-id>",
+          "rds:DatabaseClass": "db.t4g.micro",
+          "rds:DatabaseEngine": "postgres"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:rds:<region>:<account-id>:db:keycloak",
+      "Sid": "CreateOnlyTheDeclaredDatabaseShape"
+    },
+    {
+      "Action": "rds:CreateDBInstance",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:rds:<region>:<account-id>:og:default:postgres-17",
+        "arn:aws:rds:<region>:<account-id>:pg:default.postgres17",
+        "arn:aws:rds:<region>:<account-id>:subgrp:keycloak"
+      ],
+      "Sid": "CreateDatabaseReferencedResources"
+    },
+    {
+      "Action": "rds:AddTagsToResource",
+      "Condition": {
+        "Null": {
+          "aws:RequestTag/CommitSha": "false",
+          "aws:RequestTag/Environment": "false",
+          "aws:RequestTag/RunId": "false"
+        },
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "Terraform",
+          "aws:RequestTag/Repository": "nwarila-platform/keycloak",
+          "aws:RequestTag/RepositoryId": "<repository-id>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:rds:<region>:<account-id>:db:keycloak",
+      "Sid": "TagTheDatabaseWithItsIdentity"
+    },
+    {
+      "Action": "rds:DeleteDBInstance",
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/CommitSha": "false",
+          "aws:ResourceTag/Environment": "false",
+          "aws:ResourceTag/RunId": "false"
+        },
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "Terraform",
+          "aws:ResourceTag/Repository": "nwarila-platform/keycloak",
+          "aws:ResourceTag/RepositoryId": "<repository-id>"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:rds:<region>:<account-id>:db:keycloak",
+      "Sid": "DeleteOwnedDatabaseOnly"
+    },
+    {
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:CalledVia": [
+            "rds.amazonaws.com"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:rds!db-*",
+      "Sid": "LetRdsCreateTheManagedMasterSecret"
+    },
+    {
+      "Action": "secretsmanager:GetSecretValue",
+      "Condition": {
+        "StringEquals": {
+          "secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn": "arn:aws:rds:<region>:<account-id>:db:keycloak"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:rds!db-*",
+      "Sid": "ReadOnlyTheKeycloakMasterSecret"
+    }
+  ],
+  "Version": "2012-10-17"
+}
