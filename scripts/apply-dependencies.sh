@@ -454,7 +454,7 @@ SECRET="arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:rds!db-0"
 REQ='aws:RequestTag'
 RES='aws:ResourceTag'
 NONE="$(ctx aws:RequestedRegion "${REGION}")"
-OWN_SECRET="$(ctx secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn "${DB}")"
+OWN_SECRET="$(ctx aws:ResourceTag/aws:rds:primaryDBInstanceArn "${DB}")"
 
 expect runner allowed      'create the declared database'   rds:CreateDBInstance "${DB}" < <(identity "${REQ}"; db_shape)
 expect runner implicitDeny 'create another engine'         rds:CreateDBInstance "${DB}" < <(identity "${REQ}"; db_shape rds:DatabaseEngine mysql string)
@@ -470,7 +470,7 @@ expect runner allowed      'create the secret through RDS'  secretsmanager:Creat
 expect runner implicitDeny 'create a secret directly'       secretsmanager:CreateSecret "${SECRET}" <<< "${NONE}"
 expect runner allowed      "read this database's secret"    secretsmanager:GetSecretValue "${SECRET}" <<< "${OWN_SECRET}"
 expect runner implicitDeny "read another database's secret" secretsmanager:GetSecretValue "${SECRET}" \
-    < <(ctx secretsmanager:ResourceTag/aws:rds:primaryDBInstanceArn "${DB}-other")
+    < <(ctx aws:ResourceTag/aws:rds:primaryDBInstanceArn "${DB}-other")
 INSTANCE="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/*"
 expect runner allowed      'launch the declared size'       ec2:RunInstances "${INSTANCE}" < <(identity "${REQ}"; ctx ec2:InstanceType t3.medium)
 expect runner implicitDeny 'launch a larger size'           ec2:RunInstances "${INSTANCE}" < <(identity "${REQ}"; ctx ec2:InstanceType m5.24xlarge)

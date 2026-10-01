@@ -70,7 +70,8 @@ new to the fleet.
   managed policies.
   - RDS creates the secret through the caller, so `CreateSecret` and `TagResource` are allowed only
     on `rds!db-*` names and only when the call arrives through RDS (`aws:CalledVia`).
-  - `GetSecretValue` is allowed only on the secret whose RDS ownership tag names this database.
+  - `GetSecretValue` is allowed only on the secret whose RDS ownership tag names this database,
+    matched with the global `aws:ResourceTag` key (see "Measured" below).
 - No new KMS grant is needed. Storage uses `aws/rds` and the secret uses `aws/secretsmanager`.
   Naming a separate key for the secret needs the aws-terraform-framework's
   `master_user_secret_kms_alias`, which the pin in `.github/terraform-framework-pin` must reach
@@ -217,13 +218,19 @@ The documents use `<account-id>`, `<owner-id>`, `<repository-id>` and `<region>`
   The following are correct per the AWS Service Authorization Reference and the provider's source,
   but no live run has exercised them yet:
   - `aws:CalledVia` on the RDS-created secret;
-  - the secret's `aws:rds:primaryDBInstanceArn` ownership tag, and that a condition can match it;
+  - that RDS tags its secret `aws:rds:primaryDBInstanceArn`;
   - the provider's filtered `DescribeDBInstances` reads against a `db:*` grant;
   - RDS accepting `aws/secretsmanager` named explicitly as the secret's key;
   - the managed secret being deleted with the database.
 
   Each is a narrowing, so a wrong one fails closed as an AccessDenied naming the action. The fix
   is a reviewed edit here, never a wildcard.
+- **Measured.** The first live apply (2026-10-01) found that IAM's policy simulator does not
+  evaluate service-prefixed tag keys such as `secretsmanager:ResourceTag/<key>`, even for a plain
+  tag, while it does evaluate the global `aws:ResourceTag/<key>`, including for the `aws:`-prefixed
+  `aws:rds:primaryDBInstanceArn`. The secret-read statements therefore use the global key: it is
+  the key AWS recommends, Secrets Manager supports it for `GetSecretValue`, and the apply's
+  simulations can evidence it.
 - **Keycloak uses the RDS master user.** The database exists only for Keycloak and only for one
   run, so a separate application role would protect nothing the run does not already destroy. A
   persistent deployment must create one.
