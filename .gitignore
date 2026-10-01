@@ -29,7 +29,6 @@
 
 # --- [ allowed: repository configuration ] -------------------------------------------------- #
 !/.editorconfig
-!/.framework-pin
 !/.gitignore
 !/.yamllint.yml
 
@@ -43,6 +42,7 @@
 
 # --- [ allowed: GitHub configuration ] ------------------------------------------------------ #
 !/.github/CODEOWNERS
+!/.github/ansible-framework-pin
 !/.github/renovate.json5
 !/.github/terraform-framework-pin
 !/.github/workflows/aws-deploy.yml
