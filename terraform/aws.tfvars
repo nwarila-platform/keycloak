@@ -41,10 +41,10 @@ all_systems = [
     # lives only in the AWS_EC2_SSH_PRIVATE_KEY organization secret and the runner's
     # temporary directory.
     key_name = "nwarila-ec2-key"
-    # The org EC2 baseline plus read-only access to the application repository bucket, which is
-    # what lets this host pull its own repository contents down rather than receiving them from
-    # the controller. The runner role only reads and passes whichever profile is named here.
-    iam_instance_profile = "nwarila-ec2-apprepo-profile"
+    # The org EC2 baseline: SSM, the administrator's backup connection, and nothing else. The
+    # controller fetches every artifact and hands the guest a verified copy, so the guest needs
+    # no read of the application repository.
+    iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
     # CIS Red Hat Enterprise Linux 8 — the same hardened base the secure-wazuh Linux legs use.
     ami = "ami-0ca8a2e788e4c5869"
@@ -113,17 +113,6 @@ all_systems = [
             cidr_ipv4                    = "0.0.0.0/0"
             prefix_list_id               = null
             referenced_security_group_id = null
-          },
-          # The VPN tunnel that carries the host onto the private network. Scoped by port rather
-          # than by address: the profile names its endpoint by DNS, and that address changes.
-          {
-            description                  = "OpenVPN tunnel out"
-            ip_protocol                  = "udp"
-            from_port                    = 1194
-            to_port                      = 1194
-            cidr_ipv4                    = "0.0.0.0/0"
-            prefix_list_id               = null
-            referenced_security_group_id = null
           }
         ]
         tags = {}
@@ -145,10 +134,10 @@ all_systems = [
     # lives only in the AWS_EC2_SSH_PRIVATE_KEY organization secret and the runner's
     # temporary directory.
     key_name = "nwarila-ec2-key"
-    # The org EC2 baseline plus read-only access to the application repository bucket, which is
-    # what lets this host pull its own repository contents down rather than receiving them from
-    # the controller. The runner role only reads and passes whichever profile is named here.
-    iam_instance_profile = "nwarila-ec2-apprepo-profile"
+    # The org EC2 baseline: SSM, the administrator's backup connection, and nothing else. The
+    # controller fetches every artifact and hands the guest a verified copy, so the guest needs
+    # no read of the application repository.
+    iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
     # CIS Red Hat Enterprise Linux 8 — the same hardened base the secure-wazuh Linux legs use.
     ami = "ami-0ca8a2e788e4c5869"
@@ -214,17 +203,6 @@ all_systems = [
             ip_protocol                  = "tcp"
             from_port                    = 443
             to_port                      = 443
-            cidr_ipv4                    = "0.0.0.0/0"
-            prefix_list_id               = null
-            referenced_security_group_id = null
-          },
-          # The VPN tunnel that carries the host onto the private network. Scoped by port rather
-          # than by address: the profile names its endpoint by DNS, and that address changes.
-          {
-            description                  = "OpenVPN tunnel out"
-            ip_protocol                  = "udp"
-            from_port                    = 1194
-            to_port                      = 1194
             cidr_ipv4                    = "0.0.0.0/0"
             prefix_list_id               = null
             referenced_security_group_id = null

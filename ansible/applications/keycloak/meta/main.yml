@@ -14,7 +14,7 @@
 #   keycloak.installer.sha256    Lowercase 64-character digest of that object, verified on the
 #                                controller and again on the GUEST before it is unpacked.
 #
-# The controller fetches the object with its own credentials; the guest is never given any.
+# The controller fetches the object with its own credentials; the role hands the guest none.
 # ============================================================================================= #
 ---
 galaxy_info:

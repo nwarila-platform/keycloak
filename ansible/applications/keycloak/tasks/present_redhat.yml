@@ -65,17 +65,19 @@
         stdin_add_newline: true
         strip_empty_ends: true
 
-    - name: 'BEGIN | Read Whether This Version Is Unpacked'
+    # The record is written only once an unpack completes, so a tree an interrupted unpack left
+    # behind is unpacked again rather than taken for whole.
+    - name: 'BEGIN | Read Whether This Version Is Completely Unpacked'
       register: '__keycloak_unpacked__'
 
       ansible.builtin.stat:
         checksum_algorithm: 'sha1'
         follow: false
         get_attributes: false
-        get_checksum: false
+        get_checksum: true
         get_mime: false
         get_selinux_context: false
-        path: "{{ __home__ }}/bin/kc.sh"
+        path: "{{ __home__ }}/.unpacked"
 
     - name: 'BEGIN | Read What This Version Was Last Built With'
       register: '__keycloak_built__'
@@ -108,7 +110,9 @@
     __java_install_required__: >-
       {{ keycloak_running.java.package not in (ansible_facts.packages | default({})) }}
     __trust_required__: "{{ (__keycloak_trusted__.rc | default(2)) != 0 }}"
-    __unpack_required__: "{{ not (__keycloak_unpacked__.stat.exists | default(false)) }}"
+    __unpack_required__: >-
+      {{ (__keycloak_unpacked__.stat.checksum | default(''))
+         != (keycloak_running.installer.sha256 | hash('sha1')) }}
     __build_required__: >-
       {{ (__keycloak_built__.stat.checksum | default('')) != (__record__ | hash('sha1')) }}
   block:
@@ -212,7 +216,7 @@
 
     #region ------ [ Process: Unpack The Pinned Distribution ] -------------------------------- #
 
-    # The controller fetches the object with its own credentials; the guest is never given any.
+    # The controller fetches the object with its own credentials; the role hands the guest none.
     # The digest is checked on the controller before a byte is shipped, and again on the guest
     # copy, because that is the one tar reads.
     - name: 'PROCESS | Unpack The Pinned Distribution'
@@ -335,6 +339,7 @@
 
         # The archive records its entries under the vendor's build account [INV-05], so ownership
         # is set rather than kept; the top directory is stripped so the tree is named by version.
+        # include is left unstated: the module refuses it beside exclude, even when both are empty.
         - name: 'PROCESS | Unpack The Verified Copy'
           ansible.builtin.unarchive:
             decrypt: true
@@ -350,6 +355,20 @@
             src: "{{ __temp_dir__.path }}/{{ __archive__ }}"
             unsafe_writes: false
             validate_certs: true
+
+        - name: 'PROCESS | Record The Complete Unpack'
+          ansible.builtin.copy:
+            backup: false
+            content: "{{ keycloak_running.installer.sha256 }}"
+            decrypt: true
+            dest: "{{ __home__ }}/.unpacked"
+            follow: false
+            force: true
+            group: 'root'
+            mode: '0644'
+            owner: 'root'
+            remote_src: false
+            unsafe_writes: false
 
     #endregion --- [ Process: Unpack The Pinned Distribution ] -------------------------------- #
 
@@ -446,6 +465,31 @@
 
       ansible.builtin.command:
         argv: [ 'fapolicyd-cli', '--update' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # --update only notifies the daemon, which reloads behind it, so a build started at once can
+    # still be judged by the old database (measured in a Rocky 8 fapolicyd 1.3.2 lab: denied 84 ms
+    # after --update). The loaded database is read until it carries this version's libraries; a
+    # reload that never lands fails here, naming fapolicyd, not later as a Java class error.
+    - name: 'PROCESS | Wait Until fapolicyd Has Loaded The Trust'
+      changed_when: false
+      delay: 2
+      register: '__keycloak_trust_loaded__'
+      retries: 30
+      until: __keycloak_trust_loaded__.rc == 0
+      when:
+        - __fapolicyd_active__ | bool
+        - __trust_required__ | bool
+
+      ansible.builtin.command:
+        argv:
+          - 'bash'
+          - '-c'
+          - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
+          - 'trust-probe'
+          - "{{ __home__ }}/lib/"
         expand_argument_vars: false
         stdin_add_newline: true
         strip_empty_ends: true

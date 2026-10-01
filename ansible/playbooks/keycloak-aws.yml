@@ -2,8 +2,8 @@
 # File: 'ansible/playbooks/keycloak-aws.yml'
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
-# Brings the ephemeral EC2 instance from "the API says it exists" to Keycloak installed and
-# built on a CIS-hardened RHEL 8 host. Nothing is started: the database arrives in a later stage.
+# Brings the ephemeral EC2 instances from "the API says they exist" to Keycloak installed and
+# built on two CIS-hardened RHEL 8 hosts. Nothing is started: the database arrives in a later stage.
 #
 # The inventory decides how the host is reached; this play's ordered credential sets decide who
 # logs on. A new image answers only as its image account, with the launch key.

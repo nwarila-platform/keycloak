@@ -33,7 +33,7 @@ name: AWS Deploy
   workflow_dispatch:
     inputs:
       hold_minutes:
-        description: Hold the converged guest before teardown
+        description: Hold the converged guests before teardown
         type: choice
         options: [ '0', '15', '60', '120', '240' ]
         default: '0'
@@ -351,7 +351,7 @@ jobs:
 
       # Readiness, configuration and the application proof all live in the playbook. The EC2
       # inventory plugin filters live AWS instances to this repository and run before exposing
-      # one target. The budget guards against a hung converge without cutting a working one short.
+      # them as targets. The budget guards against a hung converge without cutting a working one short.
       - name: Run the application playbook
         timeout-minutes: 60
         working-directory: .frameworks/ansible-framework
@@ -410,7 +410,7 @@ jobs:
           fi
           echo "second converge: every node reported changed=0"
 
-      - name: Hold the converged guest for interactive work
+      - name: Hold the converged guests for interactive work
         if: >-
           !cancelled() &&
           github.event_name == 'workflow_dispatch' &&

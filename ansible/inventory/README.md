@@ -2,16 +2,16 @@
 
 ## There is no static inventory, and that is deliberate
 
-The AWS deploy is **ephemeral**: every run creates a new instance, converges it, and destroys it.
+The AWS deploy is **ephemeral**: every run creates new instances, converges them, and destroys them.
 An instance id written into a file here would be wrong the moment the run that produced it ended.
 
-## `aws_ec2.yml` — one run's instance, describing itself
+## `aws_ec2.yml` — one run's instances, describing themselves
 
 The file is in two parts. The first is the only part that is about this repository: the region, the
-four tag filters that select one run's instance — `RepositoryId`, `RunId` and `Repository` from the
+four tag filters that select one run's instances — `RepositoryId`, `RunId` and `Repository` from the
 workflow's own environment, and `Environment` from `ENVIRONMENT` or `test` — and the `keycloak_servers`
 group the play addresses. Everything below that is carried from the fleet's reference repository,
-with two differences a STIG-hardened RHEL host needs (see below).
+with the differences listed below.
 
 Hosts are named by their **Name tag**, which is the hostname Terraform declares, so
 `inventory_hostname` is the system's own name and nothing downstream has to be told it again. Every
@@ -49,13 +49,17 @@ authenticate with the key pair.
 |---|---|---|---|
 | `ansible_python_interpreter` on RHEL | `/usr/libexec/platform-python` | `/usr/bin/python3.12` | RHEL 8's platform-python is 3.6, below ansible-core 2.21's floor. The framework's `redhat_rocky_8` bootstrap installs 3.12 over `raw` before any module runs, and `dnf`/`rpm` respawn under platform-python for their bindings (measured 2026-09-30). |
 | `ansible_pipelining` | unset | `true` | fapolicyd on a STIG host denies an interpreter opening an untrusted script, which is what a module staged as a file is. Pipelining streams it over stdin instead. |
+| Tag reads | `aws_ec2_tags.X` | `(aws_ec2_tags \| default(aws_tags)).X` | Reads either variable, so a controller on either side of amazon.aws 11.2's rename resolves the groups (PR #12). |
+| Host keys | `StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null` | `StrictHostKeyChecking=accept-new` | Carried from this repository's skeleton. Every CI run starts with an empty known_hosts, so both accept each new host; accept-new still refuses a key that changes within a run. |
+| `ansible_user` | left to `credential_resolver` | composed from the platform | Carried from the skeleton. The resolver's contract permits it, and the published credential set outranks it. |
+| `windows_password_source` | absent | composed, empty on SSH legs | Carried from the skeleton for a WinRM leg this repository does not use; nothing reads it on an SSH leg. |
 
-Both are ignored by Windows connections, so they can move back into the reference inventory
-unchanged.
+The first two are ignored by Windows connections, so they can move back into the reference
+inventory unchanged.
 
 ## Running the playbook by hand
 
 Export `GITHUB_REPOSITORY_ID`, `GITHUB_RUN_ID` and `GITHUB_REPOSITORY` plus AWS credentials, then
-point `-i` at `aws_ec2.yml` while the instance still exists. Set `ENVIRONMENT` if the deployment is
+point `-i` at `aws_ec2.yml` while the instances still exist. Set `ENVIRONMENT` if the deployment is
 not the default `test`. The play asserts its ownership contract, so a run whose tags do not match
 fails closed.

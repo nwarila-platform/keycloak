@@ -22,7 +22,7 @@ groups:
 # Where to look, then which instance. These deployments run in one region.
 regions: [ us-east-1 ]
 
-# One run's instance and no other. Three tags are the identifiers GitHub sets for any workflow, so
+# One run's instances and no others. Three tags are the identifiers GitHub sets for any workflow, so
 # a run can only ever see what it created; the fourth names the deployment and defaults to the one
 # these pipelines build. Nothing here is particular to this repository.
 filters:

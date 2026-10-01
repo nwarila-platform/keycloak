@@ -21,7 +21,8 @@ declared build-time options. In one converge it:
 The play runs `credential_resolver`, `host_readiness` and `os_bootstrap` first; the inventory
 names the Python 3.12 that bootstrap installs and pipelines every module. The controller needs
 read access to the one object the installer key names in the application repository, and no
-right to list the bucket. The guest is never given cloud credentials.
+right to list the bucket. The role hands the guest no cloud credentials, and its instance profile
+carries SSM alone.
 
 ## Inputs
 
@@ -41,6 +42,7 @@ object key from the version:
 | `<version>/conf` | `root:keycloak`, `o=` | Read by the account, written by root |
 | `<version>/lib/quarkus` | `keycloak` | The only directory the build rewrites [INV-02] |
 | `<version>/data`, `data/tmp` | `keycloak` | Run-time data, and the JVM's temporary directory |
+| `<version>/.unpacked` | `root` | The archive digest, written only after an unpack completes |
 | `<version>/.build-options` | `root` | What the tree was last built from and with |
 
 A rebuild happens only when the version or the build options differ from `.build-options`. The
@@ -51,7 +53,7 @@ build is retried by the next converge.
 
 | Constraint | How the role meets it |
 |---|---|
-| fapolicyd | `lib/` joins the trust file `trust.d/keycloak`; the database reloads [INV-01] |
+| fapolicyd | `lib/` joins the trust file `trust.d/keycloak`; the build waits until the reloaded database carries it [INV-01] |
 | `noexec` `/tmp`, `/var/tmp`, `/home` | JVM temp is `data/tmp`; the home is the install root |
 | FIPS mode | No opt-out: the build and version read run on the FIPS-mode JVM [INV-04] |
 | SELinux | `restorecon -R -v` over the install root, which prints nothing on a converged host |
