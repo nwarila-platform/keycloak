@@ -20,6 +20,10 @@
 !/.github/workflows/
 !/ansible/
 !/ansible/inventory/
+!/dependencies/
+!/dependencies/aws/
+!/dependencies/aws/policies/
+!/dependencies/aws/roles/
 !/scripts/
 !/terraform/
 
@@ -50,7 +54,43 @@
 !/ansible/inventory/README.md
 !/ansible/inventory/aws_ec2.yml
 
+# --- [ allowed: dependency declarations ] -------------------------------------------------- #
+!/dependencies/MANIFEST.sha256
+!/dependencies/README.md
+!/dependencies/registry-values.yml
+!/dependencies/aws/artifacts.yml
+!/dependencies/aws/estate.yml
+!/dependencies/aws/manifest.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_admin_s3.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_admin_secretsmanager.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_ebs.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_ec2.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_elb.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_eni.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_iam.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_rds.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_s3.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_reaper_sg.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_ebs.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_ec2.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_elb.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_eni.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_iam.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_kms.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_rds.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_s3.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_sg.json
+!/dependencies/aws/policies/nwarila-platform_keycloak_runner_ssm.json
+!/dependencies/aws/roles/nwarila-platform_keycloak_admin.trust.json
+!/dependencies/aws/roles/nwarila-platform_keycloak_admin.yml
+!/dependencies/aws/roles/nwarila-platform_keycloak_reaper.trust.json
+!/dependencies/aws/roles/nwarila-platform_keycloak_reaper.yml
+!/dependencies/aws/roles/nwarila-platform_keycloak_runner.trust.json
+!/dependencies/aws/roles/nwarila-platform_keycloak_runner.yml
+
 # --- [ allowed: scripts ] ------------------------------------------------------------------- #
+!/scripts/apply-dependencies.sh
+!/scripts/check-dependencies.py
 !/scripts/compose-and-run.sh
 !/scripts/materialize-role-scripts.sh
 

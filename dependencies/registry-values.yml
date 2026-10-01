@@ -1,0 +1,8 @@
+# LOCAL-FIRST SHIM — delete this one file when the org registry exists.
+# Declaration files keep their registry:// references unchanged; every value carries evidence.
+"registry://aws/s3/ansible":
+  value: "<account-id>-ansible"
+  evidence: "dependencies/aws/policies/nwarila-platform_keycloak_admin_s3.json"
+"registry://aws/s3/apprepo":
+  value: "<account-id>-apprepo"
+  evidence: "dependencies/aws/policies/nwarila-platform_keycloak_runner_s3.json"

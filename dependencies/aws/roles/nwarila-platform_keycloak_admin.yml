@@ -1,0 +1,19 @@
+schema: aws-role/v1
+name: "nwarila-platform_keycloak_admin"
+session_seconds: 3600
+trust: "nwarila-platform_keycloak_admin.trust.json"
+attach:
+  - "nwarila-platform_keycloak_admin_s3"
+  - "nwarila-platform_keycloak_admin_secretsmanager"
+  - "nwarila-platform_keycloak_runner_ebs"
+  - "nwarila-platform_keycloak_runner_ec2"
+  - "nwarila-platform_keycloak_runner_eni"
+  - "nwarila-platform_keycloak_runner_iam"
+  - "nwarila-platform_keycloak_runner_kms"
+  - "nwarila-platform_keycloak_runner_s3"
+  - "nwarila-platform_keycloak_runner_sg"
+  - "nwarila-platform_keycloak_runner_ssm"
+managed_attach: []
+path: /
+description: null
+managed_by: consumer

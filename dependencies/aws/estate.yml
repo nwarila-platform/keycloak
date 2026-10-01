@@ -1,0 +1,40 @@
+# Standing objects the pinned aws-terraform-framework consumes but never creates: it takes a DB
+# subnet group by name and pre-created security groups by id (its docs/reference/invariants.md),
+# and RDS and Elastic Load Balancing each need their service-linked role before a first create.
+# All of them are free while unused, so they stand between runs and the ephemeral deploy only
+# references them. scripts/apply-dependencies.sh creates and reconciles them; the runner can
+# neither modify nor delete them, because none carries the deploy identity.
+#
+# Reachability is by membership, not by address: the nodes carry keycloak-node, and the load
+# balancer and the database admit only that group, so nothing else in a shared subnet reaches
+# either. 'system-subnets' resolves at apply time to every subnet terraform/aws.tfvars places a
+# system in: the subnets are named in exactly one file.
+schema: aws-estate/v1
+tags:
+  ManagedBy: "apply-dependencies"
+  Repository: "nwarila-platform/keycloak"
+service_linked_roles:
+  - "elasticloadbalancing.amazonaws.com"
+  - "rds.amazonaws.com"
+db_subnet_groups:
+  - name: "keycloak"
+    description: "Keycloak database placement across the Keycloak node subnets"
+    subnets: "system-subnets"
+security_groups:
+  - name: "keycloak-alb"
+    description: "Keycloak internal ALB: HTTP from the nodes, to Keycloak and its health port"
+    ingress:
+      - { description: "HTTP from the Keycloak nodes", protocol: "tcp", port: 80, source: "keycloak-node" }
+    egress:
+      - { description: "Keycloak HTTP", protocol: "tcp", port: 8080, source: "keycloak-node" }
+      - { description: "Keycloak management (health)", protocol: "tcp", port: 9000, source: "keycloak-node" }
+  - name: "keycloak-db"
+    description: "Keycloak database: PostgreSQL from the Keycloak nodes only"
+    ingress:
+      - { description: "PostgreSQL from the Keycloak nodes", protocol: "tcp", port: 5432, source: "keycloak-node" }
+    egress: []
+  # Membership only: the nodes' own run-scoped rules live in terraform/aws.tfvars.
+  - name: "keycloak-node"
+    description: "Keycloak nodes: membership the ALB and database admit"
+    ingress: []
+    egress: []
