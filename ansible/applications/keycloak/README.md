@@ -95,6 +95,12 @@ it installed, and removing it would take any package that requires it along.
 6. [INV-06] With `JAVA_OPTS_APPEND` set, `kc.sh` prints `Appending additional Java properties to
    JAVA_OPTS` before `Keycloak <version>`. Measured on 2026-10-01. Consequence: END matches the
    version line, not the first line.
+7. [INV-07] The 26.7.5 archive has no entries for `conf/`, `providers/` or `themes/`, only for
+   files beneath them, so tar creates those three with the extracting process's umask. On the CIS
+   host root's umask is 077, which made them 0700 and failed `kc.sh build` as the account with
+   `ERROR: .../lib/../providers` (measured live on 2026-10-01). A lab with umask 022 had not shown
+   it. Consequence: the role sets `providers/` and `themes/` to 0755 after unpacking. `conf/` is
+   already restricted to `root:keycloak` by its own task.
 
 ## Verification
 
