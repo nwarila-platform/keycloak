@@ -320,7 +320,8 @@ fi
 
 #region ------ [ Apply ] --------------------------------------------------------------------- #
 apply_action() {
-    local verb="$1" arn oldest sg_id description direction protocol ports peer permission
+    local verb="$1" arn oldest sg_id description direction protocol ports peer permission defaults
+    local -a default_rules
     shift
     case "${verb}" in
         policy-create)
@@ -365,9 +366,13 @@ apply_action() {
                      --tag-specifications "$(jq -cn --argjson t "${ESTATE_TAGS_JSON}" '[{ResourceType: "security-group", Tags: $t}]')" \
                      --query GroupId --output text)"
             SG_IDS["$1"]="${sg_id}"
-            # A new group allows all egress; the declaration is the whole truth, so that rule goes.
+            # A new group allows all egress, over IPv6 too in a dual-stack VPC; the declaration is
+            # the whole truth, so every default egress rule goes, by id, as the AWS provider does.
+            defaults="$(aws_ ec2 describe-security-group-rules --filters "Name=group-id,Values=${sg_id}" \
+                        --query 'SecurityGroupRules[?IsEgress].SecurityGroupRuleId' --output text)"
+            read -r -a default_rules <<< "${defaults}"
             aws_ ec2 revoke-security-group-egress --group-id "${sg_id}" \
-                --ip-permissions '[{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}]' > /dev/null ;;
+                --security-group-rule-ids "${default_rules[@]}" > /dev/null ;;
         sg-authorize)
             read -r direction protocol ports peer <<< "$2"
             description="$(jq -r --arg n "$1" --arg d "${direction}" --arg pr "${protocol}" --arg p "${ports%-*}" \

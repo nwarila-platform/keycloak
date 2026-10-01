@@ -203,9 +203,10 @@ Verify it with exactly:
 The credential-free validator, `scripts/check-dependencies.py`, also checks:
 - schemas, metadata, attachments and object closure;
 - tokens, literals, canonical JSON and symlinks;
+- that no policy or trust uses `NotAction`, `NotResource` or `NotPrincipal`;
 - divergence references;
-- that the estate is closed, names no subnet, VPC, security group id or address, and that its
-  subnet group is the one `runner_rds` authorizes;
+- that the estate is closed, names no subnet, VPC, security group id or address, declares no
+  security group rule twice, and that its subnet group is the one `runner_rds` authorizes;
 - that each role stays within the default managed-policy quota;
 - that the playbook's installer pin equals the declared artifact, and that it reads every declared
   secret;

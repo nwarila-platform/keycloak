@@ -227,6 +227,14 @@ def check_canonical_json() -> None:
         require(path.read_bytes() == expected, f"canonical JSON serializer mismatch: {rel(path)}")
 
 
+def check_no_negations() -> None:
+    """A Not* element grants everything it does not name, in a policy or a trust alike."""
+    for path in [*sorted((AWS / "policies").glob("*.json")), *sorted((AWS / "roles").glob("*.trust.json"))]:
+        for statement in load_json(path)["Statement"]:
+            negated = sorted(set(statement) & {"NotAction", "NotPrincipal", "NotResource"})
+            require(not negated, f"{rel(path)} statement {statement.get('Sid')!r} uses {negated}")
+
+
 def check_declarations() -> dict[str, dict[str, Any]]:
     require(not (AWS / "proposed").exists(), "aws/proposed/ must not exist in the desired-state tree")
     require(not (AWS / "profiles").exists(), "aws/profiles/ must not exist; shared profiles are external dependencies")
@@ -387,6 +395,8 @@ def check_estate() -> None:
     require(names == sorted(set(names)), "aws/estate.yml: security groups must be unique and lexical by name")
     for sg in document["security_groups"]:
         require_keys(sg, {"name", "description", "ingress", "egress"}, set(), f"security_group {sg['name']}")
+        # AWS refuses a duplicate rule (InvalidPermission.Duplicate), so one could never converge.
+        seen: set[tuple[Any, ...]] = set()
         for direction in ("ingress", "egress"):
             require(isinstance(sg[direction], list), f"security_group {sg['name']}.{direction}: expected a list")
             for rule in sg[direction]:
@@ -396,6 +406,9 @@ def check_estate() -> None:
                 require(rule["protocol"] in {"tcp", "udp"}, f"{label}: protocol must be tcp or udp")
                 require(isinstance(rule["port"], int) and 0 < rule["port"] < 65536, f"{label}: port must be one port number")
                 require(rule["source"] in names, f"{label}: source {rule['source']!r} is not a declared estate security group")
+                identity = (direction, rule["protocol"], rule["port"], rule["source"])
+                require(identity not in seen, f"{label}: rule {identity} is declared twice")
+                seen.add(identity)
 
 
 def check_registry_closure() -> None:
@@ -417,6 +430,7 @@ def main() -> int:
         check_integrity()
         check_literals_and_tokens()
         check_canonical_json()
+        check_no_negations()
         roles = check_declarations()
         check_manifest(roles)
         objects = check_artifacts()
