@@ -1,0 +1,37 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/meta/main.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Role metadata for keycloak. Description-only: NOT an enforcing argument spec. The role's
+# tasks/validate.yml enforces its merged-config guards.
+#
+# REQUIRED INPUTS -- declared empty in defaults and supplied by the playbook, because every
+# artifact location carries an account id and a concrete default would ship one site's values:
+#
+#   keycloak.installer.bucket    S3 bucket holding the distribution (the application repository).
+#   keycloak.installer.version   Three-part Keycloak version the tarball delivers; names the
+#                                versioned install directory and is read back from kc.sh.
+#   keycloak.installer.sha256    Lowercase 64-character digest of that object, verified on the
+#                                controller and again on the GUEST before it is unpacked.
+#
+# The controller fetches the object with its own credentials; the role hands the guest none.
+# ============================================================================================= #
+---
+galaxy_info:
+  role_name: 'keycloak'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: >-
+    Keycloak for CIS-hardened RHEL 8. Installs the AppStream Java 21 runtime and an unprivileged
+    service account, unpacks the pinned, digest-verified distribution into a versioned directory
+    trusted by fapolicyd, and runs kc.sh build with the declared build-time options -- then reads
+    the version back from Keycloak itself. Starts nothing: there is no database yet.
+  license: 'MIT'
+  min_ansible_version: '2.21'
+  platforms:
+    - name: 'EL'
+      versions:
+        - '8'
+  galaxy_tags: ['rhel', 'cis', 'stig', 'keycloak', 'identity', 'sso']
+
+dependencies: []

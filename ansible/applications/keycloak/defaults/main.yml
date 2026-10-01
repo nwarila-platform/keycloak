@@ -1,0 +1,74 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/defaults/main.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Lowest-precedence configuration for the keycloak role. The v3 loader merges the OS overlay in
+# vars/ over this map and publishes the result as 'keycloak_running'; tasks read only that.
+#
+# Universally safe values live here: the runtime, the account, the layout and the build options.
+# The artifact's location and digest change with every site, so they are declared empty and the
+# PLAYBOOK supplies them where a reader can see them (meta/main.yml, tasks/validate.yml).
+#
+# ============================================================================================= #
+---
+keycloak_defaults:
+
+  #region ------ [ Installer ] ---------------------------------------------------------------- #
+
+  # The distribution tarball, at the application repository's <Publisher>/<Application>/<version>
+  # layout. The token <version> is replaced with installer.version, so a bump is one version and
+  # one digest; the controller fetches it and the guest verifies the digest before unpacking it.
+  installer:
+    bucket: ''
+    key: 'Keycloak/Keycloak/<version>/Keycloak_Keycloak_<version>_noarch.tar.gz'
+    version: ''
+    sha256: ''
+
+  #endregion --- [ Installer ] ---------------------------------------------------------------- #
+
+  #region ------ [ Java Runtime ] ------------------------------------------------------------- #
+
+  # Keycloak 26.7 runs on Java 21 or 25, and RHEL 8 AppStream ships 21. The major release is the
+  # pin; the build follows RHEL's errata for it. home is the link the package keeps to its own
+  # runtime, so kc.sh runs this JVM whatever the system 'java' alternative names.
+  java:
+    package: 'java-21-openjdk-headless'
+    home: '/usr/lib/jvm/jre-21-openjdk'
+
+  #endregion --- [ Java Runtime ] ------------------------------------------------------------- #
+
+  #region ------ [ Service Account ] ---------------------------------------------------------- #
+
+  # One name for the system account and its group. It never logs in, and its home is the install
+  # root because /home is noexec on a CIS host. state=absent removes it.
+  account: 'keycloak'
+
+  #endregion --- [ Service Account ] ---------------------------------------------------------- #
+
+  #region ------ [ Layout ] ------------------------------------------------------------------- #
+
+  # Each version unpacks into <install_root>/<version> and 'current' links the built one, so a
+  # bump builds beside the old tree and switches with one link. state=absent removes it whole,
+  # which is why validate.yml holds it to one directory directly under /opt.
+  install_root: '/opt/keycloak'
+
+  #endregion --- [ Layout ] ------------------------------------------------------------------- #
+
+  #region ------ [ Build ] -------------------------------------------------------------------- #
+
+  # The build-time options 'kc.sh build' bakes into lib/quarkus; a change rebuilds. The cache
+  # stack is a run-time option in 26.7, not one of these [INV-03].
+  build_options:
+    - '--db=postgres'
+    - '--health-enabled=true'
+    - '--metrics-enabled=true'
+
+  #endregion --- [ Build ] -------------------------------------------------------------------- #
+
+  #region ------ [ fapolicyd ] ---------------------------------------------------------------- #
+
+  # The file under /etc/fapolicyd/trust.d that this role writes and alone owns, so state=absent
+  # withdraws exactly the trust that present granted.
+  fapolicyd_trust_file: 'keycloak'
+
+  #endregion --- [ fapolicyd ] ---------------------------------------------------------------- #

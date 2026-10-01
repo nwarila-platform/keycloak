@@ -1,0 +1,644 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/present_redhat.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Installs Keycloak at the pinned version on a CIS-hardened RHEL 8 host and builds it. It starts
+# nothing: there is no database to start it against yet.
+#
+# BEGIN reads the host. PROCESS converges the runtime, the account, the unpacked tree, its
+# fapolicyd trust and the build, each writing only on difference. END reads the version back from
+# Keycloak itself and is ungated, so a converged host proves what a fresh one does.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Begin: Read The Host ] ------------------------------------------------------- #
+
+- name: 'BEGIN | Read The Host'
+  vars:
+    __home__: "{{ keycloak_running.install_root }}/{{ keycloak_running.installer.version }}"
+  block:
+
+    # rc-contract: systemctl(1) is-active exits 0 only for an active unit, printing its state.
+    - name: 'BEGIN | Read Whether fapolicyd Is Running'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: '__keycloak_fapolicyd__'
+
+      ansible.builtin.command:
+        argv: [ 'systemctl', 'is-active', 'fapolicyd' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # rc-contract: grep(1) exits 0 when a line matches, 1 when none does, 2 when it cannot read
+    # the file -- as on a host without fapolicyd, or before this role ever trusted anything.
+    - name: 'BEGIN | Read Whether fapolicyd Trusts This Version'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: '__keycloak_trusted__'
+
+      ansible.builtin.command:
+        argv:
+          - 'grep'
+          - '-q'
+          - '-F'
+          - '--'
+          - "{{ __home__ }}/lib/"
+          - "/etc/fapolicyd/trust.d/{{ keycloak_running.fapolicyd_trust_file }}"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # rc-contract: selinuxenabled(8) exits 0 when SELinux is enabled and 1 when it is not.
+    - name: 'BEGIN | Read Whether SELinux Is Enabled'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: '__keycloak_selinux__'
+
+      ansible.builtin.command:
+        argv: [ 'selinuxenabled' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # The record is written only once an unpack completes, so a tree an interrupted unpack left
+    # behind is unpacked again rather than taken for whole.
+    - name: 'BEGIN | Read Whether This Version Is Completely Unpacked'
+      register: '__keycloak_unpacked__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: true
+        get_mime: false
+        get_selinux_context: false
+        path: "{{ __home__ }}/.unpacked"
+
+    - name: 'BEGIN | Read What This Version Was Last Built With'
+      register: '__keycloak_built__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: true
+        get_mime: false
+        get_selinux_context: false
+        path: "{{ __home__ }}/.build-options"
+
+#endregion --- [ Begin: Read The Host ] ------------------------------------------------------- #
+
+#region ------ [ Process: Install And Build Keycloak ] ---------------------------------------- #
+
+- name: 'PROCESS | Install And Build Keycloak At The Pinned Version'
+  vars:
+    __home__: "{{ keycloak_running.install_root }}/{{ keycloak_running.installer.version }}"
+    __object__: >-
+      {{ keycloak_running.installer.key
+         | replace('<version>', keycloak_running.installer.version) }}
+    __archive__: "{{ __object__ | basename }}"
+    # What the tree was built from and with; a difference from the record rebuilds it.
+    __record__: >-
+      {{ ([keycloak_running.installer.version] + keycloak_running.build_options) | join(' ') }}
+    __fapolicyd_active__: >-
+      {{ (__keycloak_fapolicyd__.stdout | default('') | trim) == 'active' }}
+    __java_install_required__: >-
+      {{ keycloak_running.java.package not in (ansible_facts.packages | default({})) }}
+    __trust_required__: "{{ (__keycloak_trusted__.rc | default(2)) != 0 }}"
+    __unpack_required__: >-
+      {{ (__keycloak_unpacked__.stat.checksum | default(''))
+         != (keycloak_running.installer.sha256 | hash('sha1')) }}
+    __build_required__: >-
+      {{ (__keycloak_built__.stat.checksum | default('')) != (__record__ | hash('sha1')) }}
+  block:
+
+    #region ------ [ Process: Install The Java Runtime ] -------------------------------------- #
+
+    - name: 'PROCESS | Install The Java Runtime'
+      ansible.builtin.dnf:
+        allow_downgrade: false
+        allowerasing: false
+        autoremove: false
+        bugfix: false
+        cacheonly: false
+        disable_gpg_check: false
+        disable_plugin: []
+        disablerepo: []
+        download_only: false
+        enable_plugin: []
+        enablerepo: []
+        exclude: []
+        install_weak_deps: true
+        installroot: '/'
+        lock_timeout: 30
+        name: [ "{{ keycloak_running.java.package }}" ]
+        security: false
+        skip_broken: false
+        sslverify: true
+        state: 'present'
+        update_cache: false
+        update_only: false
+        use_backend: 'auto'
+        validate_certs: true
+
+    #endregion --- [ Process: Install The Java Runtime ] -------------------------------------- #
+
+    #region ------ [ Process: Create The Service Account ] ------------------------------------ #
+
+    - name: 'PROCESS | Create The Service Group'
+      ansible.builtin.group:
+        force: false
+        local: false
+        name: "{{ keycloak_running.account }}"
+        non_unique: false
+        state: 'present'
+        system: true
+
+    - name: 'PROCESS | Create The Service Account'
+      ansible.builtin.user:
+        append: false
+        create_home: false
+        force: false
+        generate_ssh_key: false
+        group: "{{ keycloak_running.account }}"
+        home: "{{ keycloak_running.install_root }}"
+        local: false
+        move_home: false
+        name: "{{ keycloak_running.account }}"
+        non_unique: false
+        remove: false
+        shell: '/sbin/nologin'
+        ssh_key_comment: 'ansible-generated on $HOSTNAME'
+        ssh_key_type: 'rsa'
+        state: 'present'
+        system: true
+        update_password: 'always'
+
+    #endregion --- [ Process: Create The Service Account ] ------------------------------------ #
+
+    #region ------ [ Process: Create The Install Root ] --------------------------------------- #
+
+    # Readable by the account alone, which shuts every other account out of the whole tree.
+    - name: 'PROCESS | Create The Install Root'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: "{{ keycloak_running.account }}"
+        mode: '0750'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: 'root'
+        path: "{{ keycloak_running.install_root }}"
+        recurse: false
+        state: 'directory'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Create The Version Directory'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: 'root'
+        mode: '0755'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: 'root'
+        path: "{{ __home__ }}"
+        recurse: false
+        state: 'directory'
+        unsafe_writes: false
+
+    #endregion --- [ Process: Create The Install Root ] --------------------------------------- #
+
+    #region ------ [ Process: Unpack The Pinned Distribution ] -------------------------------- #
+
+    # The controller fetches the object with its own credentials; the role hands the guest none.
+    # The digest is checked on the controller before a byte is shipped, and again on the guest
+    # copy, because that is the one tar reads.
+    - name: 'PROCESS | Unpack The Pinned Distribution'
+      when: __unpack_required__ | bool
+      block:
+
+        - name: 'PROCESS | Create The Controller Staging Directory'
+          become: false
+          changed_when: false
+          check_mode: false
+          delegate_to: 'localhost'
+          register: '__keycloak_stage__'
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+          ansible.builtin.tempfile:
+            path: '/tmp'
+            prefix: 'keycloak-'
+            state: 'directory'
+            suffix: ''
+
+        # The module probes the BUCKET before the object, on a bucket-level grant this deployment
+        # does not hold; skipping that probe is the documented answer. A missing object still
+        # fails loudly: the key check uses head_object, which the object grant authorizes.
+        - name: 'PROCESS | Fetch The Distribution To The Controller'
+          become: false
+          changed_when: false
+          delegate_to: 'localhost'
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+          amazon.aws.s3_object:
+            bucket: "{{ keycloak_running.installer.bucket }}"
+            ceph: false
+            debug_botocore_endpoint_logs: false
+            dest: "{{ __keycloak_stage__.path }}/{{ __archive__ }}"
+            dualstack: false
+            encrypt: true
+            encryption_mode: 'AES256'
+            expiry: 600
+            ignore_nonexistent_bucket: true
+            mode: 'get'
+            object: "{{ __object__ }}"
+            overwrite: 'always'
+            permission: [ 'private' ]
+            prefix: ''
+            purge_tags: true
+            retries: 0
+            sig_v4: true
+            validate_bucket_name: true
+            validate_certs: true
+
+        - name: 'PROCESS | Read The Controller Copy Digest'
+          become: false
+          delegate_to: 'localhost'
+          register: '__keycloak_controller_copy__'
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            follow: false
+            get_attributes: false
+            get_checksum: true
+            get_mime: false
+            get_selinux_context: false
+            path: "{{ __keycloak_stage__.path }}/{{ __archive__ }}"
+
+        - name: 'PROCESS | Require The Controller Copy To Match Its Pin'
+          ansible.builtin.assert:
+            fail_msg: >-
+              The stored distribution has sha256
+              {{ __keycloak_controller_copy__.stat.checksum | default('(missing)') }}, but the
+              playbook pins {{ keycloak_running.installer.sha256 }}. The object changed under an
+              unchanged pin; refusing to ship it.
+            quiet: true
+            that:
+              - __keycloak_controller_copy__.stat.exists
+              - __keycloak_controller_copy__.stat.checksum == keycloak_running.installer.sha256
+
+        # Into the loader's temporary directory: root-owned, 0700, removed when the role ends.
+        - name: 'PROCESS | Copy The Distribution To The Guest'
+          changed_when: false
+
+          ansible.builtin.copy:
+            backup: false
+            decrypt: true
+            dest: "{{ __temp_dir__.path }}/{{ __archive__ }}"
+            follow: false
+            force: true
+            group: 'root'
+            mode: '0600'
+            owner: 'root'
+            remote_src: false
+            src: "{{ __keycloak_stage__.path }}/{{ __archive__ }}"
+            unsafe_writes: false
+
+        - name: 'PROCESS | Read The Guest Copy Digest'
+          register: '__keycloak_guest_copy__'
+
+          ansible.builtin.stat:
+            checksum_algorithm: 'sha256'
+            follow: false
+            get_attributes: false
+            get_checksum: true
+            get_mime: false
+            get_selinux_context: false
+            path: "{{ __temp_dir__.path }}/{{ __archive__ }}"
+
+        - name: 'PROCESS | Require The Guest Copy To Match Its Pin'
+          ansible.builtin.assert:
+            fail_msg: >-
+              The copy staged on the guest has sha256
+              {{ __keycloak_guest_copy__.stat.checksum | default('(missing)') }}, but the
+              playbook pins {{ keycloak_running.installer.sha256 }}. Refusing to unpack it.
+            quiet: true
+            that:
+              - __keycloak_guest_copy__.stat.exists
+              - __keycloak_guest_copy__.stat.checksum == keycloak_running.installer.sha256
+
+        # The archive records its entries under the vendor's build account [INV-05], so ownership
+        # is set rather than kept; the top directory is stripped so the tree is named by version.
+        # include is left unstated: the module refuses it beside exclude, even when both are empty.
+        - name: 'PROCESS | Unpack The Verified Copy'
+          ansible.builtin.unarchive:
+            decrypt: true
+            dest: "{{ __home__ }}"
+            exclude: []
+            extra_opts: [ '--strip-components=1' ]
+            group: 'root'
+            io_buffer_size: 65536
+            keep_newer: false
+            list_files: false
+            owner: 'root'
+            remote_src: true
+            src: "{{ __temp_dir__.path }}/{{ __archive__ }}"
+            unsafe_writes: false
+            validate_certs: true
+
+        - name: 'PROCESS | Record The Complete Unpack'
+          ansible.builtin.copy:
+            backup: false
+            content: "{{ keycloak_running.installer.sha256 }}"
+            decrypt: true
+            dest: "{{ __home__ }}/.unpacked"
+            follow: false
+            force: true
+            group: 'root'
+            mode: '0644'
+            owner: 'root'
+            remote_src: false
+            unsafe_writes: false
+
+    #endregion --- [ Process: Unpack The Pinned Distribution ] -------------------------------- #
+
+    #region ------ [ Process: Grant The Account What Keycloak Writes ] ------------------------ #
+
+    # The build rewrites lib/quarkus and uses the JVM temporary directory, nothing else [INV-02].
+    - name: 'PROCESS | Hand The Build Output To The Account'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: "{{ keycloak_running.account }}"
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: "{{ keycloak_running.account }}"
+        path: "{{ __home__ }}/lib/quarkus"
+        recurse: true
+        state: 'directory'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Create The Data Directory'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: "{{ keycloak_running.account }}"
+        mode: '0750'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: "{{ keycloak_running.account }}"
+        path: "{{ __home__ }}/data"
+        recurse: false
+        state: 'directory'
+        unsafe_writes: false
+
+    # The JVM's own temporary directory, because /tmp and /var/tmp are noexec on a CIS host.
+    - name: 'PROCESS | Create The JVM Temporary Directory'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: "{{ keycloak_running.account }}"
+        mode: '0700'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: "{{ keycloak_running.account }}"
+        path: "{{ __home__ }}/data/tmp"
+        recurse: false
+        state: 'directory'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Restrict The Configuration To The Account'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: "{{ keycloak_running.account }}"
+        mode: 'u=rwX,g=rX,o='
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: 'root'
+        path: "{{ __home__ }}/conf"
+        recurse: true
+        state: 'directory'
+        unsafe_writes: false
+
+    #endregion --- [ Process: Grant The Account What Keycloak Writes ] ------------------------ #
+
+    #region ------ [ Process: Trust The Libraries In fapolicyd ] ------------------------------ #
+
+    # Some of the jars are a type fapolicyd lets a non-root process open only when trusted
+    # [INV-01]. Trusted once, by path: a rebuild rewrites the same files, none of them of such a
+    # type [INV-02].
+    - name: 'PROCESS | Trust The Libraries Of This Version In fapolicyd'
+      changed_when: true
+      when:
+        - __fapolicyd_active__ | bool
+        - __trust_required__ | bool
+
+      ansible.builtin.command:
+        argv:
+          - 'fapolicyd-cli'
+          - '--file'
+          - 'add'
+          - "{{ __home__ }}/lib/"
+          - '--trust-file'
+          - "{{ keycloak_running.fapolicyd_trust_file }}"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # Also how fapolicyd learns a Java runtime installed above, before anything runs it.
+    - name: 'PROCESS | Reload The fapolicyd Trust Database'
+      changed_when: true
+      when:
+        - __fapolicyd_active__ | bool
+        - (__java_install_required__ | bool) or (__trust_required__ | bool)
+
+      ansible.builtin.command:
+        argv: [ 'fapolicyd-cli', '--update' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # --update only notifies the daemon, which reloads behind it, so a build started at once can
+    # still be judged by the old database (measured in a Rocky 8 fapolicyd 1.3.2 lab: denied 84 ms
+    # after --update). The loaded database is read until it carries this version's libraries; a
+    # reload that never lands fails here, naming fapolicyd, not later as a Java class error.
+    - name: 'PROCESS | Wait Until fapolicyd Has Loaded The Trust'
+      changed_when: false
+      delay: 2
+      register: '__keycloak_trust_loaded__'
+      retries: 30
+      until: __keycloak_trust_loaded__.rc == 0
+      when:
+        - __fapolicyd_active__ | bool
+        - __trust_required__ | bool
+
+      ansible.builtin.command:
+        argv:
+          - 'bash'
+          - '-c'
+          - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
+          - 'trust-probe'
+          - "{{ __home__ }}/lib/"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    #endregion --- [ Process: Trust The Libraries In fapolicyd ] ------------------------------ #
+
+    #region ------ [ Process: Build Keycloak ] ------------------------------------------------ #
+
+    # As the account that owns the output, on the host's own JVM, FIPS mode and all [INV-04].
+    - name: 'PROCESS | Build Keycloak With The Declared Options'
+      become: true
+      become_user: "{{ keycloak_running.account }}"
+      changed_when: true
+      environment:
+        JAVA_HOME: "{{ keycloak_running.java.home }}"
+        JAVA_OPTS_APPEND: "-Djava.io.tmpdir={{ __home__ }}/data/tmp"
+      when: __build_required__ | bool
+
+      ansible.builtin.command:
+        argv: "{{ [__home__ ~ '/bin/kc.sh', 'build'] + keycloak_running.build_options }}"
+        chdir: "{{ __home__ }}"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # Written only once a build has succeeded, so a failed build is retried by the next converge
+    # rather than recorded as done.
+    - name: 'PROCESS | Record What This Version Was Built With'
+      ansible.builtin.copy:
+        backup: false
+        content: "{{ __record__ }}"
+        decrypt: true
+        dest: "{{ __home__ }}/.build-options"
+        follow: false
+        force: true
+        group: 'root'
+        mode: '0644'
+        owner: 'root'
+        remote_src: false
+        unsafe_writes: false
+
+    - name: 'PROCESS | Point The current Link At This Version'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: false
+        force: false
+        group: 'root'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: 'root'
+        path: "{{ keycloak_running.install_root }}/current"
+        recurse: false
+        src: "{{ keycloak_running.installer.version }}"
+        state: 'link'
+        unsafe_writes: false
+
+    #endregion --- [ Process: Build Keycloak ] ------------------------------------------------ #
+
+    #region ------ [ Process: Label The Tree For SELinux ] ------------------------------------ #
+
+    # Unpacked and written in place, the tree normally carries /opt's policy label already; -v
+    # prints only what restorecon changes, so a converged host reports nothing.
+    - name: 'PROCESS | Apply The SELinux Labels Under The Install Root'
+      changed_when: __keycloak_relabel__.stdout | length > 0
+      register: '__keycloak_relabel__'
+      when: (__keycloak_selinux__.rc | default(1)) == 0
+
+      ansible.builtin.command:
+        argv: [ 'restorecon', '-R', '-v', "{{ keycloak_running.install_root }}" ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    #endregion --- [ Process: Label The Tree For SELinux ] ------------------------------------ #
+
+  always:
+
+    - name: 'PROCESS | Remove The Controller Staging Directory'
+      become: false
+      changed_when: false
+      delegate_to: 'localhost'
+      when: __keycloak_stage__.path is defined
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        modification_time_format: '%Y%m%d%H%M.%S'
+        path: "{{ __keycloak_stage__.path }}"
+        recurse: false
+        state: 'absent'
+        unsafe_writes: false
+
+#endregion --- [ Process: Install And Build Keycloak ] ---------------------------------------- #
+
+#region ------ [ End: Prove The Pinned Version Is Built ] ------------------------------------- #
+
+- name: 'END | Prove The Pinned Version Is Built As Declared'
+  vars:
+    __current__: "{{ keycloak_running.install_root }}/current"
+    __record__: >-
+      {{ ([keycloak_running.installer.version] + keycloak_running.build_options) | join(' ') }}
+  block:
+
+    # The version as Keycloak itself reports it, through the link a service will start from. A
+    # JAVA_OPTS_APPEND makes kc.sh announce itself first, so the line is matched [INV-06].
+    - name: 'END | Read The Version From Keycloak'
+      become: true
+      become_user: "{{ keycloak_running.account }}"
+      changed_when: false
+      check_mode: false
+      environment:
+        JAVA_HOME: "{{ keycloak_running.java.home }}"
+        JAVA_OPTS_APPEND: "-Djava.io.tmpdir={{ __current__ }}/data/tmp"
+      register: '__keycloak_version__'
+
+      ansible.builtin.command:
+        argv: [ "{{ __current__ }}/bin/kc.sh", '--version' ]
+        chdir: "{{ __current__ }}"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Read What The Version Was Built With'
+      register: '__keycloak_record__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: true
+        get_mime: false
+        get_selinux_context: false
+        path: "{{ __current__ }}/.build-options"
+
+    - name: 'END | Require The Pinned Version Built With The Declared Options'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Keycloak is not the declared build. kc.sh --version answered
+          {{ __keycloak_version__.stdout_lines }} (declared Keycloak
+          {{ keycloak_running.installer.version }}); the build record's sha1 is
+          {{ __keycloak_record__.stat.checksum | default('(missing)') }}, and '{{ __record__ }}'
+          hashes to {{ __record__ | hash('sha1') }}.
+        quiet: true
+        that:
+          - >-
+            ('Keycloak ' ~ keycloak_running.installer.version)
+            in __keycloak_version__.stdout_lines
+          - (__keycloak_record__.stat.checksum | default('')) == (__record__ | hash('sha1'))
+
+#endregion --- [ End: Prove The Pinned Version Is Built ] ------------------------------------- #

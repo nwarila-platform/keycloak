@@ -1,0 +1,14 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/vars/redhat.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# RedHat-family overlay merged over keycloak_defaults by the v3 loader.
+#
+# The role supports one family, and the defaults are already its values: the AppStream package
+# and its JRE path, the install root and the account. This overlay exists because the loader
+# resolves one per family; an empty map says this family needs no override, where a copy of the
+# defaults would drift from them.
+#
+# ============================================================================================= #
+---
+{}

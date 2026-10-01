@@ -1,0 +1,164 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/absent_redhat.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Reverses present_redhat.yml: every version under the install root and the current link, the
+# fapolicyd trust this role granted, and the account and its group. A host holding none of it
+# changes nothing, so a second absent run reports no change.
+#
+# The Java runtime stays. It is a shared system package this role cannot tell it installed, and
+# removing it would take any package that requires it along.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Begin: Read The Host ] ------------------------------------------------------- #
+
+- name: 'BEGIN | Read The Host'
+  block:
+
+    # rc-contract: systemctl(1) is-active exits 0 only for an active unit, printing its state.
+    - name: 'BEGIN | Read Whether fapolicyd Is Running'
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      register: '__keycloak_fapolicyd__'
+
+      ansible.builtin.command:
+        argv: [ 'systemctl', 'is-active', 'fapolicyd' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'BEGIN | Read Whether The fapolicyd Trust File Exists'
+      register: '__keycloak_trust_file__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+        get_selinux_context: false
+        path: "/etc/fapolicyd/trust.d/{{ keycloak_running.fapolicyd_trust_file }}"
+
+#endregion --- [ Begin: Read The Host ] ------------------------------------------------------- #
+
+#region ------ [ Process: Remove Keycloak ] --------------------------------------------------- #
+
+- name: 'PROCESS | Remove Keycloak'
+  block:
+
+    - name: 'PROCESS | Remove The Install Root'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        modification_time_format: '%Y%m%d%H%M.%S'
+        path: "{{ keycloak_running.install_root }}"
+        recurse: false
+        state: 'absent'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Withdraw The fapolicyd Trust'
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        modification_time_format: '%Y%m%d%H%M.%S'
+        path: "/etc/fapolicyd/trust.d/{{ keycloak_running.fapolicyd_trust_file }}"
+        recurse: false
+        state: 'absent'
+        unsafe_writes: false
+
+    - name: 'PROCESS | Reload The fapolicyd Trust Database'
+      changed_when: true
+      when:
+        - (__keycloak_fapolicyd__.stdout | default('') | trim) == 'active'
+        - __keycloak_trust_file__.stat.exists | default(false)
+
+      ansible.builtin.command:
+        argv: [ 'fapolicyd-cli', '--update' ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    # remove stays false: the account's home is the install root, already gone.
+    - name: 'PROCESS | Remove The Service Account'
+      ansible.builtin.user:
+        append: false
+        create_home: false
+        force: false
+        generate_ssh_key: false
+        local: false
+        move_home: false
+        name: "{{ keycloak_running.account }}"
+        non_unique: false
+        remove: false
+        ssh_key_comment: 'ansible-generated on $HOSTNAME'
+        ssh_key_type: 'rsa'
+        state: 'absent'
+        system: true
+        update_password: 'always'
+
+    - name: 'PROCESS | Remove The Service Group'
+      ansible.builtin.group:
+        force: false
+        local: false
+        name: "{{ keycloak_running.account }}"
+        non_unique: false
+        state: 'absent'
+        system: true
+
+#endregion --- [ Process: Remove Keycloak ] --------------------------------------------------- #
+
+#region ------ [ End: Prove Nothing Remains ] ------------------------------------------------- #
+
+- name: 'END | Prove Nothing Of Keycloak Remains'
+  block:
+
+    - name: 'END | Read What Remains On Disk'
+      loop:
+        - "{{ keycloak_running.install_root }}"
+        - "/etc/fapolicyd/trust.d/{{ keycloak_running.fapolicyd_trust_file }}"
+      loop_control: { label: "{{ item }}" }
+      register: '__keycloak_remains__'
+
+      ansible.builtin.stat:
+        checksum_algorithm: 'sha1'
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+        get_selinux_context: false
+        path: "{{ item }}"
+
+    # rc-contract: getent(1) exits 0 when the key is found and 2 when it is not.
+    - name: 'END | Read Whether The Account And Group Remain'
+      changed_when: false
+      check_mode: false
+      failed_when: __keycloak_identity__.rc not in [0, 2]
+      loop: [ 'passwd', 'group' ]
+      loop_control: { label: "{{ item }}" }
+      register: '__keycloak_identity__'
+
+      ansible.builtin.command:
+        argv: [ 'getent', "{{ item }}", "{{ keycloak_running.account }}" ]
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
+
+    - name: 'END | Require Nothing Of Keycloak To Remain'
+      ansible.builtin.assert:
+        fail_msg: >-
+          Keycloak is not absent. Still on disk:
+          {{ __keycloak_remains__.results | selectattr('stat.exists') | map(attribute='item')
+             | list }}; still in the account databases:
+          {{ __keycloak_identity__.results | selectattr('rc', 'equalto', 0)
+             | map(attribute='item') | list }}.
+        quiet: true
+        that:
+          - __keycloak_remains__.results | selectattr('stat.exists') | list | length == 0
+          - __keycloak_identity__.results | selectattr('rc', 'equalto', 0) | list | length == 0
+
+#endregion --- [ End: Prove Nothing Remains ] ------------------------------------------------- #

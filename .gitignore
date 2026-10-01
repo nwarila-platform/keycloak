@@ -19,7 +19,14 @@
 !/.github/
 !/.github/workflows/
 !/ansible/
+!/ansible/applications/
+!/ansible/applications/keycloak/
+!/ansible/applications/keycloak/defaults/
+!/ansible/applications/keycloak/meta/
+!/ansible/applications/keycloak/tasks/
+!/ansible/applications/keycloak/vars/
 !/ansible/inventory/
+!/ansible/playbooks/
 !/dependencies/
 !/dependencies/aws/
 !/dependencies/aws/policies/
@@ -29,7 +36,6 @@
 
 # --- [ allowed: repository configuration ] -------------------------------------------------- #
 !/.editorconfig
-!/.framework-pin
 !/.gitignore
 !/.yamllint.yml
 
@@ -43,6 +49,7 @@
 
 # --- [ allowed: GitHub configuration ] ------------------------------------------------------ #
 !/.github/CODEOWNERS
+!/.github/ansible-framework-pin
 !/.github/renovate.json5
 !/.github/terraform-framework-pin
 !/.github/workflows/aws-deploy.yml
@@ -51,8 +58,17 @@
 !/.github/workflows/quality.yml
 
 # --- [ allowed: the ansible tree ] ---------------------------------------------------------- #
+!/ansible/applications/keycloak/README.md
+!/ansible/applications/keycloak/defaults/main.yml
+!/ansible/applications/keycloak/meta/main.yml
+!/ansible/applications/keycloak/tasks/absent_redhat.yml
+!/ansible/applications/keycloak/tasks/main.yml
+!/ansible/applications/keycloak/tasks/present_redhat.yml
+!/ansible/applications/keycloak/tasks/validate.yml
+!/ansible/applications/keycloak/vars/redhat.yml
 !/ansible/inventory/README.md
 !/ansible/inventory/aws_ec2.yml
+!/ansible/playbooks/keycloak-aws.yml
 
 # --- [ allowed: dependency declarations ] -------------------------------------------------- #
 !/dependencies/MANIFEST.sha256
