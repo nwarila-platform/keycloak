@@ -1,0 +1,26 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/handlers/main.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Keycloak reads its configuration, its environment, its unit and the version 'current' links
+# once, at start. Tasks in present_redhat.yml write each of those, and none takes effect until
+# the service restarts, so each notifies this handler.
+#
+# A handler runs once however often it is notified: a converge that moves a setting AND a link
+# restarts once, and one that moves neither never restarts. present_redhat.yml flushes it before
+# the readiness wait, so the wait judges the restarted service.
+#
+# ============================================================================================= #
+---
+- name: 'Restart Keycloak'
+  listen: 'keycloak-restart-required'
+
+  ansible.builtin.systemd_service:
+    daemon_reexec: false
+    daemon_reload: true
+    force: false
+    masked: false
+    name: "{{ keycloak_running.service }}"
+    no_block: false
+    scope: 'system'
+    state: 'restarted'

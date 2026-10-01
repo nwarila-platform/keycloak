@@ -1,7 +1,8 @@
 # `keycloak` role
 
-Installs Keycloak at a pinned version on a CIS-hardened RHEL 8 host and builds it with its
-declared build-time options. In one converge it:
+Installs Keycloak at a pinned version on a CIS-hardened RHEL 8 host, builds it with its declared
+build-time options, and runs it as a service in a cluster that shares one PostgreSQL database. In
+one converge it:
 
 1. installs the Java 21 runtime from RHEL AppStream;
 2. creates the unprivileged `keycloak` system account and group;
@@ -10,19 +11,25 @@ declared build-time options. In one converge it:
 4. trusts the version's libraries in fapolicyd;
 5. runs `kc.sh build` as the account;
 6. links `/opt/keycloak/current` to the built version;
-7. reads the version back from Keycloak itself, through that link.
+7. writes `keycloak.conf`, a root-only environment file carrying the database and first
+   administrator passwords, and a hardened systemd unit, and restarts only when one of them or the
+   link changed;
+8. starts the service and waits for `/health/ready` on the management port;
+9. reads the version back from Keycloak itself, through that link, and the service's state and
+   readiness from the host.
 
-> **Scope:** install and build only. Nothing is started and nothing listens: the database
-> Keycloak starts against arrives in a later stage, and with it the service, the listener and the
-> firewall.
+The nodes find each other through the database: Keycloak 26.7's default cache stack, jdbc-ping,
+registers every node there, and the nodes talk on TCP 7800 and 57800. The playbook owns the host
+firewall and starts nodes one at a time, so the first creates the schema before the second joins.
 
 ## Composition and prerequisites
 
 The play runs `credential_resolver`, `host_readiness` and `os_bootstrap` first; the inventory
-names the Python 3.12 that bootstrap installs and pipelines every module. The controller needs
-read access to the one object the installer key names in the application repository, and no
-right to list the bucket. The role hands the guest no cloud credentials, and its instance profile
-carries SSM alone.
+names the Python 3.12 that bootstrap installs and pipelines every module. The controller reads
+three things with its own credentials: the one object the installer key names in the application
+repository (with no right to list the bucket), the database credentials in the secret RDS
+manages, and the administrator password. The role hands the guest no cloud credentials, and its
+instance profile carries SSM alone.
 
 ## Inputs
 
@@ -38,8 +45,10 @@ object key from the version:
 |---|---|---|
 | `/opt/keycloak` | `root:keycloak`, 0750 | The account's home; shuts every other account out |
 | `/opt/keycloak/<version>` | `root` | One unpacked, built version; a bump builds beside it |
-| `/opt/keycloak/current` | link | The built version a service will start from |
-| `<version>/conf` | `root:keycloak`, `o=` | Read by the account, written by root |
+| `/opt/keycloak/current` | link | The built version the service starts from |
+| `/opt/keycloak/keycloak.env` | `root`, 0600 | The two passwords; systemd reads it before dropping to the account |
+| `/etc/systemd/system/keycloak.service` | `root` | The hardened unit |
+| `<version>/conf` | `root:keycloak`, `o=` | `keycloak.conf`; read by the account, written by root |
 | `<version>/lib/quarkus` | `keycloak` | The only directory the build rewrites [INV-02] |
 | `<version>/data`, `data/tmp` | `keycloak` | Run-time data, and the JVM's temporary directory |
 | `<version>/.unpacked` | `root` | The archive digest, written only after an unpack completes |
@@ -63,7 +72,7 @@ build is retried by the next converge.
 | State | Does |
 |---|---|
 | `present` | Everything above |
-| `absent` | Removes the tree, the trust file, the account and group; proves none remains |
+| `absent` | Stops the service and removes its unit, the tree, the trust file, the account and group; proves none remains |
 
 `absent` leaves the Java runtime installed: it is a shared system package this role cannot tell
 it installed, and removing it would take any package that requires it along.
@@ -106,5 +115,6 @@ it installed, and removing it would take any package that requires it along.
 
 END is ungated: every converge runs `current/bin/kc.sh --version` as the account and requires
 the line `Keycloak <version>`, and requires `.build-options` to hold the declared version and
-options. No step waits on anything; the build and the version read are bounded by the workflow
-step's budget.
+options, and requires the service enabled, active and answering `/health/ready` with `UP`. Two
+steps wait, each bounded: until fapolicyd has loaded the trust, and until a started service
+reports ready.

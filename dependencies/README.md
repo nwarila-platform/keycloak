@@ -207,6 +207,8 @@ The credential-free validator, `scripts/check-dependencies.py`, also checks:
 - that the estate is closed, names no subnet, VPC, security group id or address, and that its
   subnet group is the one `runner_rds` authorizes;
 - that each role stays within the default managed-policy quota;
+- that the playbook's installer pin equals the declared artifact, and that it reads every declared
+  secret;
 - that the runner's S3 policy authorizes every declared object, and that nothing in it reaches
   this repository's prefix beyond the declared objects.
 
