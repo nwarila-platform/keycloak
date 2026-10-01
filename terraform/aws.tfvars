@@ -71,12 +71,11 @@ all_systems = [
     }
 
     root_block_device = {
-      delete_on_termination = true
-      iops                  = null
-      tags                  = {}
-      throughput            = null
-      volume_type           = "gp3"
-      volume_size           = "50"
+      iops        = null
+      tags        = {}
+      throughput  = null
+      volume_type = "gp3"
+      volume_size = "50"
     }
 
     # The CIS RHEL 8 AMI ships TWO devices: /dev/sda1 (root, handled by root_block_device, which
@@ -86,12 +85,11 @@ all_systems = [
     # with ebs_block_devices: the framework assigns those suffixes starting at 'd'.
     ami_block_device_overrides = [
       {
-        delete_on_termination = true
-        device_name           = "/dev/sdf"
-        iops                  = "3000"
-        throughput            = "125"
-        volume_size           = "40"
-        volume_type           = "gp3"
+        device_name = "/dev/sdf"
+        iops        = "3000"
+        throughput  = "125"
+        volume_size = "40"
+        volume_type = "gp3"
       }
     ]
 
@@ -240,12 +238,11 @@ all_systems = [
     }
 
     root_block_device = {
-      delete_on_termination = true
-      iops                  = null
-      tags                  = {}
-      throughput            = null
-      volume_type           = "gp3"
-      volume_size           = "50"
+      iops        = null
+      tags        = {}
+      throughput  = null
+      volume_type = "gp3"
+      volume_size = "50"
     }
 
     # The CIS RHEL 8 AMI ships TWO devices: /dev/sda1 (root, handled by root_block_device, which
@@ -255,12 +252,11 @@ all_systems = [
     # with ebs_block_devices: the framework assigns those suffixes starting at 'd'.
     ami_block_device_overrides = [
       {
-        delete_on_termination = true
-        device_name           = "/dev/sdf"
-        iops                  = "3000"
-        throughput            = "125"
-        volume_size           = "40"
-        volume_type           = "gp3"
+        device_name = "/dev/sdf"
+        iops        = "3000"
+        throughput  = "125"
+        volume_size = "40"
+        volume_type = "gp3"
       }
     ]
 
