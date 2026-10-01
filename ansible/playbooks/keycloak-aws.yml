@@ -1,0 +1,116 @@
+# =========================================================================================== #
+# File: 'ansible/playbooks/keycloak-aws.yml'
+# --- [ Description ] ----------------------------------------------------------------------- #
+#
+# Brings the ephemeral EC2 instance from "the API says it exists" to Keycloak installed and
+# built on a CIS-hardened RHEL 8 host. Nothing is started: the database arrives in a later stage.
+#
+# The inventory decides how the host is reached; this play's ordered credential sets decide who
+# logs on. A new image answers only as its image account, with the launch key.
+#
+# Runs from the composed tree: the workflow overlays this repository onto the pinned framework
+# and uses its configuration, role search path, connection defaults, and explicit fact gathering.
+#
+# =========================================================================================== #
+---
+
+#region ------ [ Play: Inventory Contract ] --------------------------------------------------- #
+# The inventory already filters to this run's instance by its framework-set tags. This guards the
+# two states that filter cannot cover: an empty result, where nothing launched or nothing tagged,
+# and an invocation that never said which account it is deploying into.
+
+- name: 'PLAY | Validate The Ephemeral AWS Inventory Contract'
+  hosts: 'localhost'
+  tasks:
+    - name: 'INVENTORY | Require At Least One Filtered Host'
+      ansible.builtin.assert:
+        that: groups['keycloak_servers'] | default([]) | length >= 1
+        fail_msg: >-
+          Refusing to configure: the 'keycloak_servers' inventory group is empty. The dynamic EC2
+          inventory found no running instance tagged for this run -- a zero-host inventory is not
+          a successful deployment proof.
+        quiet: true
+
+    # Account-derived values are passed EXPLICITLY on the invocation, never read from the
+    # environment by a role, so the play and the deploy identity cannot disagree.
+    - name: 'INVENTORY | Require The AWS Deployment Identity'
+      ansible.builtin.assert:
+        that:
+          - aws_account_id is defined
+          - aws_account_id is match('^[0-9]{12}$')
+          - aws_region is defined
+          - aws_region is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
+        fail_msg: >-
+          aws_account_id and aws_region must be provided as extra-vars. The aws-deploy workflow
+          passes them from its own environment (the same values the OIDC role ARN and region
+          use); a local run must pass both explicitly.
+        quiet: true
+
+#endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
+
+#region ------ [ Play: Prepare The Hosts ] ---------------------------------------------------- #
+
+- name: 'PLAY | Prepare The Hosts (ephemeral AWS)'
+  hosts: 'keycloak_servers'
+  any_errors_fatal: true
+  vars:
+    launch_key_file: "{{ lookup('ansible.builtin.env', 'CI_PRIVATE_KEY') \
+      | default('~/.ssh/nwarila-ec2-key', true) | expanduser }}"
+    # The CIS RHEL 8 image answers only as its image account, authenticated by the account key
+    # pair it installed from instance metadata at first boot. Nothing here joins a directory, so
+    # there is no later identity to hand over to.
+    credential_sets:
+      - name: 'image-administrator'
+        connection: 'ssh'
+        user: 'ec2-user'
+        private_key_file: "{{ launch_key_file }}"
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+    # The image account must reach uid 0 through non-interactive sudo; every later play escalates.
+    - role: 'credential_resolver'
+      tags: ['always']
+      vars:
+        credential_resolver_candidates: "{{ credential_sets }}"
+        credential_resolver_require_elevated: true
+        credential_resolver_wait_pause_seconds: 10
+        credential_resolver_wait_rounds: 60
+
+    - role: 'host_readiness'
+
+    # RHEL 8 ships Python 3.6, below ansible-core's floor; the bootstrap installs the Python 3.12
+    # the inventory names for every later module, over raw, before any module runs.
+    - role: 'os_bootstrap'
+
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Prepare The Hosts ] ---------------------------------------------------- #
+
+#region ------ [ Play: Keycloak ] ------------------------------------------------------------- #
+# Tagged so a run can build the host alone (--skip-tags products) when what is under test is the
+# ground Keycloak stands on.
+
+- name: 'PLAY | Keycloak (ephemeral AWS)'
+  hosts: 'keycloak_servers'
+  any_errors_fatal: true
+  become: true
+  tags: ['products']
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+    - role: 'keycloak'
+      vars:
+        keycloak:
+
+          # What is installed, stated where a reader can see it. The digest is the SHA-256 the
+          # vendor publishes for keycloak-26.7.5.tar.gz on its GitHub release; the application
+          # repository carries those bytes at the key the role composes from the version. A
+          # version bump is these two values.
+          installer:
+            bucket: "{{ aws_account_id }}-apprepo"
+            version: '26.7.5'
+            sha256: '87d680d13cf4600d232ca0433a2553c57ebf03e56f7718fc0d03a1a8705497c8'
+
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Keycloak ] ------------------------------------------------------------- #
