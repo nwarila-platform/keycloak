@@ -417,6 +417,28 @@
         state: 'directory'
         unsafe_writes: false
 
+    # The archive lists files under providers/ and themes/ but not the directories, so tar creates
+    # them with the extracting process's umask: 077 for root on a CIS host, which left them closed
+    # to the account and failed 'kc.sh build' on providers/ [INV-07].
+    - name: 'PROCESS | Open The Directories The Archive Leaves Implicit'
+      loop: [ 'providers', 'themes' ]
+      loop_control:
+        label: "{{ __directory__ }}"
+        loop_var: '__directory__'
+
+      ansible.builtin.file:
+        access_time_format: '%Y%m%d%H%M.%S'
+        follow: true
+        force: false
+        group: 'root'
+        mode: '0755'
+        modification_time_format: '%Y%m%d%H%M.%S'
+        owner: 'root'
+        path: "{{ __home__ }}/{{ __directory__ }}"
+        recurse: false
+        state: 'directory'
+        unsafe_writes: false
+
     - name: 'PROCESS | Restrict The Configuration To The Account'
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
