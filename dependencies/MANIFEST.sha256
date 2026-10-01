@@ -1,6 +1,6 @@
-f31f7b51b888c90b4b2cd620a1eb316c6f99c1bd48e6e04b274a26c75cb7c205  ./README.md
+9117ca3973f209f68bd1d276faacaa1cbba39c46b1803effa7d687f9cc66b442  ./README.md
 e840f3233990858556cf81f070e9c9c7cb86260b27ea4c0c9dd985e51ff4cd56  ./aws/artifacts.yml
-20fb04f3566d9376bc823035c320ffb34a5fbc49d2c7fddf5794b5d91bcb284c  ./aws/estate.yml
+1c80d95f0acacab6c1840ac0ed4fc54663659fddf1e8942142d772d795cf5184  ./aws/estate.yml
 62a55f00cc305c23005e8651d359d46c00da2e6533330b8fccf3f9586b157600  ./aws/manifest.json
 f30e7d58575d6aa2be1d4ab05b96531f75581fe6c08dec77bf0472c5bc48a9b6  ./aws/policies/nwarila-platform_keycloak_admin_s3.json
 0002531ec922c2e049a5a455994bdcb97b5aae39ec9f8320559d0437e365e780  ./aws/policies/nwarila-platform_keycloak_admin_secretsmanager.json

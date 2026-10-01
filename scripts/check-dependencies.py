@@ -111,6 +111,8 @@ APPREPO_WILDCARD = "arn:aws:s3:::<account-id>-apprepo/*"
 ESTATE_TAGS = {"ManagedBy": "apply-dependencies", "Repository": "nwarila-platform/keycloak"}
 # The services the runner creates through, each needing its service-linked role first.
 SERVICE_LINKED_ROLES = ["elasticloadbalancing.amazonaws.com", "rds.amazonaws.com"]
+# The database's storage and master-secret keys (aws_kms_alias, master_user_secret_kms_alias).
+AWS_MANAGED_KEYS = ["aws/rds", "aws/secretsmanager"]
 SYSTEM_SUBNETS = "system-subnets"
 
 
@@ -374,7 +376,14 @@ def check_estate() -> None:
     subnet, decides what reaches the load balancer and the database.
     """
     document = require_mapping(load_yaml(AWS / "estate.yml"), "aws/estate.yml")
-    require_keys(document, {"schema", "tags", "service_linked_roles", "db_subnet_groups", "security_groups"}, set(), "aws/estate.yml")
+    require_keys(
+        document,
+        {"schema", "tags", "aws_managed_keys", "service_linked_roles", "db_subnet_groups", "security_groups"},
+        set(),
+        "aws/estate.yml",
+    )
+    keys = require_string_list(document["aws_managed_keys"], "aws/estate.yml aws_managed_keys")
+    require(keys == AWS_MANAGED_KEYS, "aws/estate.yml: AWS managed keys differ from the keys the database uses")
     require(document["schema"] == "aws-estate/v1", "aws/estate.yml: invalid schema")
     require(document["tags"] == ESTATE_TAGS, "aws/estate.yml: tags differ from the closed expected table")
     services = require_string_list(document["service_linked_roles"], "aws/estate.yml service_linked_roles")

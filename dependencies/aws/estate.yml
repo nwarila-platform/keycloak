@@ -5,6 +5,11 @@
 # references them. scripts/apply-dependencies.sh creates and reconciles them; the runner can
 # neither modify nor delete them, because none carries the deploy identity.
 #
+# The database's two keys are AWS managed and free, but an account has none until a service first
+# uses it, and the framework's alias lookup then fails ("reading KMS Alias
+# (alias/aws/secretsmanager): empty result", measured 2026-10-01). DescribeKey on the predefined
+# alias creates the key.
+#
 # Reachability is by membership, not by address: the nodes carry keycloak-node, and the load
 # balancer and the database admit only that group, so nothing else in a shared subnet reaches
 # either. 'system-subnets' resolves at apply time to every subnet terraform/aws.tfvars places a
@@ -13,6 +18,9 @@ schema: aws-estate/v1
 tags:
   ManagedBy: "apply-dependencies"
   Repository: "nwarila-platform/keycloak"
+aws_managed_keys:
+  - "aws/rds"
+  - "aws/secretsmanager"
 service_linked_roles:
   - "elasticloadbalancing.amazonaws.com"
   - "rds.amazonaws.com"
