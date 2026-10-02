@@ -17,7 +17,7 @@ HOW
     RFC 5802 with SHA-256 (RFC 7677), in PostgreSQL's storage form:
     SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>, base64 throughout. 4096 iterations
     and a 16-byte salt are what PostgreSQL itself uses. A fresh salt every call means a fresh
-    verifier every call; the role passes it only where a role is being created. SASLprep is not
+    verifier every call; the module applies it only when it creates the role. SASLprep is not
     applied: it leaves printable ASCII unchanged, which is all the playbook generates.
 """
 

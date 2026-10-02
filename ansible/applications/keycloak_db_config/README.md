@@ -57,15 +57,16 @@ must not be the administrator.
   pipeline the database is new every run, and END reads both back.
 - PUBLIC keeps PostgreSQL's default CONNECT and TEMP on the `postgres` and `template1` databases,
   so the role can open them and create temporary tables there (PostgreSQL's default database ACL,
-  measured on PostgreSQL 17; inferred for RDS). Revoking them is later work.
-- The role's password exists only in the controller file
+  measured on PostgreSQL 17 on 2026-10-02; inferred for RDS). Revoking them is later work.
+- On the controller, the role's password exists only in the file
   `~/.ansible/keycloak/<sha256 of the master secret's ARN>.password`, which the first converge
   writes. A converge from any other controller -- an operator's, during the workflow's hold --
   generates a different one: END's login as the role then fails before Keycloak is touched, but a
   run whose `--limit` leaves out the node this role runs on skips END and writes the new password
   to the nodes it does reach. To converge a living stack from another controller, first write that
-  file with `KCRAW_DB_PASSWORD` from a node's root-only `/opt/keycloak/keycloak.env`; the value is
-  letters and digits, so it needs no unescaping.
+  file, mode 0600 in a 0700 directory, with the text between the double quotes of
+  `KCRAW_DB_PASSWORD` in a node's root-only `/opt/keycloak/keycloak.env`; it is letters and
+  digits, so nothing inside needs unescaping.
 
 ## State
 

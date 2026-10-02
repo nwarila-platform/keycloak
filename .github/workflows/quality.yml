@@ -60,9 +60,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           for tests in ansible/applications/*/tests; do
-            # A role's tests/ may hold only galaxy's playbook layout; discover exits 5 on no tests.
-            compgen -G "$tests/test_*.py" > /dev/null || continue
-            python3 -m unittest discover -s "$tests"
+            python3 -m unittest discover -s "${tests}"
           done
 
       - name: Lint YAML

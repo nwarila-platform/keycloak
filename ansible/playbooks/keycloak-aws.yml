@@ -113,7 +113,7 @@
 # Before any node starts Keycloak, whose first start creates its tables as that role. Only this
 # play and the Remove play read the master credential, each on one node: the inventory orders
 # hosts by instance id, so [0] is the same node in every invocation -- the Keycloak play's first
-# batch.
+# batch -- and the second converge finds the driver already installed.
 
 - name: 'PLAY | Provision Keycloak''s Database Role (ephemeral AWS)'
   hosts: 'keycloak_servers[0]'
