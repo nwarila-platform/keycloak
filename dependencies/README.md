@@ -244,9 +244,11 @@ The documents use `<account-id>`, `<owner-id>`, `<repository-id>` and `<region>`
   provider's lookup would create the key was wrong: the lookup fails before anything calls
   DescribeKey. A DescribeKey on the alias created the key, and `estate.yml` now declares both of
   the database's keys.
-- **Keycloak uses the RDS master user.** The database exists only for Keycloak and only for one
-  run, so a separate application role would protect nothing the run does not already destroy. A
-  persistent deployment must create one.
+- **Keycloak does not run as the RDS master user.** The playbook reads the master credential on
+  the controller and uses it once, from one node, to provision a login role with no
+  administrative attribute and the schema Keycloak runs in (the `keycloak_db_config` role). The
+  credential never reaches a node's disk. Reading the master secret is the runner's existing
+  `GetSecretValue`; no grant was added.
 - **Baseline grants this repository does not use.** `runner_s3` grants `s3:GetObject` on the
   domain-join secret and the VPN profile, and on all of `<account-id>-apprepo/*`. `runner_ssm`
   grants `SendCommand` with the PowerShell document. `runner_iam` reads and passes the apprepo

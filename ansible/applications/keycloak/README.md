@@ -26,17 +26,20 @@ firewall and starts nodes one at a time, so the first creates the schema before 
 
 The play runs `credential_resolver`, `host_readiness` and `os_bootstrap` first; the inventory
 names the Python 3.12 that bootstrap installs and pipelines every module. The controller reads
-three things with its own credentials: the one object the installer key names in the application
-repository (with no right to list the bucket), the database credentials in the secret RDS
-manages, and the administrator password. The role hands the guest no cloud credentials, and its
-instance profile carries SSM alone.
+two things with its own credentials: the one object the installer key names in the application
+repository (with no right to list the bucket), and the administrator password. Keycloak's
+database role, and the schema it runs in, are provisioned beforehand by
+[`keycloak_db_config`](../keycloak_db_config/README.md); this role receives only that role's name
+and password, never the database's master credential. The role hands the guest no cloud
+credentials, and its instance profile carries SSM alone.
 
 ## Inputs
 
 See [`meta/main.yml`](meta/main.yml) for the required inputs and
 [`defaults/main.yml`](defaults/main.yml) for everything with a safe default. The playbook
-supplies `installer.bucket`, `installer.version` and `installer.sha256`; the role composes the
-object key from the version:
+supplies `installer.bucket`, `installer.version` and `installer.sha256`, and the database's
+`host`, `name`, `schema`, `username` and `password`; the role composes the object key from the
+version:
 `Keycloak/Keycloak/<version>/Keycloak_Keycloak_<version>_noarch.tar.gz`.
 
 ## Layout

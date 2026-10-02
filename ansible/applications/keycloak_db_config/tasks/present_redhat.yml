@@ -1,0 +1,314 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/present_redhat.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Provisions the PostgreSQL role Keycloak runs as, and the schema it runs in, from a node that
+# can reach the database, logged in as the database's administrator.
+#
+# BEGIN reads the host. PROCESS installs the Python driver the modules need, then creates the
+# role, takes PUBLIC's default privileges away, creates the schema and grants the role what
+# Keycloak needs in it, each only on difference. END logs in as the role itself and reads back
+# its attributes and privileges, and is ungated, so a converged database proves what a fresh one
+# does. Only the driver install and its fapolicyd wait run as root.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Begin: Read The Host ] ------------------------------------------------------- #
+
+# rc-contract: systemctl(1) is-active exits 0 only for an active unit, printing its state.
+- name: 'BEGIN | Read Whether fapolicyd Is Running'
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  register: '__keycloak_db_config_fapolicyd__'
+
+  ansible.builtin.command:
+    argv: [ 'systemctl', 'is-active', 'fapolicyd' ]
+    expand_argument_vars: false
+    stdin_add_newline: true
+    strip_empty_ends: true
+
+#endregion --- [ Begin: Read The Host ] ------------------------------------------------------- #
+
+#region ------ [ Process: Install The Python Driver ] ----------------------------------------- #
+
+- name: 'PROCESS | Install The Python Driver'
+  become: true
+  register: '__keycloak_db_config_driver__'
+
+  ansible.builtin.dnf:
+    allow_downgrade: false
+    allowerasing: false
+    autoremove: false
+    bugfix: false
+    cacheonly: false
+    disable_gpg_check: false
+    disable_plugin: []
+    disablerepo: []
+    download_only: false
+    enable_plugin: []
+    enablerepo: []
+    exclude: []
+    install_weak_deps: true
+    installroot: '/'
+    lock_timeout: 30
+    name: [ "{{ keycloak_db_config_running.python_driver_package }}" ]
+    security: false
+    skip_broken: false
+    sslverify: true
+    state: 'present'
+    update_cache: false
+    update_only: false
+    use_backend: 'auto'
+    validate_certs: true
+
+# The rpm plugin only notifies fapolicyd of a new package, and the daemon reloads behind it, so a
+# module started at once can still be judged by the old database -- and the modules run as the
+# SSH user, whom RHEL's default rules let open an untrusted shared library only when trusted. The
+# loaded database is read until it carries the driver; a reload that never lands fails here,
+# naming fapolicyd, not later as an import error.
+# rc-contract: grep(1) exits 0 when a line matches and 1 when none does.
+- name: 'PROCESS | Wait Until fapolicyd Has Loaded The Driver'
+  become: true
+  changed_when: false
+  delay: 2
+  register: '__keycloak_db_config_driver_trusted__'
+  retries: 30
+  until: __keycloak_db_config_driver_trusted__.rc == 0
+  when:
+    - (__keycloak_db_config_fapolicyd__.stdout | default('') | trim) == 'active'
+    - __keycloak_db_config_driver__ is changed
+
+  ansible.builtin.command:
+    argv:
+      - 'bash'
+      - '-c'
+      - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
+      - 'trust-probe'
+      - "{{ keycloak_db_config_running.python_driver_path }}"
+    expand_argument_vars: false
+    stdin_add_newline: true
+    strip_empty_ends: true
+
+#endregion --- [ Process: Install The Python Driver ] ----------------------------------------- #
+
+#region ------ [ Process: Provision The Role And Its Schema ] --------------------------------- #
+
+# Every task logs in as the administrator over TLS (the server refuses anything else).
+# trust_input stays on: every name these tasks put into SQL was checked as an identifier by
+# validate.yml, and every password is bound as a parameter. Both passwords reach the modules only
+# as parameters their argument specs mask, which also scrubs them from every result.
+- name: 'PROCESS | Provision The Role And Its Schema'
+  block:
+
+    # The role is created with a SCRAM verifier, so the password itself never reaches the server.
+    # On RDS the administrator cannot read pg_authid, so without no_password_changes the module
+    # would send the password again on every run and report a change it did not make.
+    - name: 'PROCESS | Create The Role Keycloak Runs As'
+      community.postgresql.postgresql_user:
+        configuration: {}
+        conn_limit: "{{ keycloak_db_config_running.role.connection_limit | int }}"
+        connect_params: {}
+        encrypted: true
+        fail_on_user: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        name: "{{ keycloak_db_config_running.role.name }}"
+        no_password_changes: true
+        password: "{{ keycloak_db_config_running.role.password | scram_sha256_verifier }}"
+        quote_configuration_values: true
+        reset_unspecified_configuration: false
+        role_attr_flags: >-
+          NOSUPERUSER,NOCREATEDB,NOCREATEROLE,NOINHERIT,NOREPLICATION,NOBYPASSRLS
+        ssl_mode: 'require'
+        state: 'present'
+        trust_input: true
+
+    # By default every role may connect to a new database and create temporary tables in it.
+    - name: "PROCESS | Revoke PUBLIC's Privileges On The Database"
+      community.postgresql.postgresql_privs:
+        connect_params: {}
+        fail_on_role: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        objs: "{{ keycloak_db_config_running.name }}"
+        privs: 'ALL'
+        roles: 'PUBLIC'
+        ssl_mode: 'require'
+        state: 'absent'
+        trust_input: true
+        type: 'database'
+
+    - name: 'PROCESS | Grant The Role CONNECT On The Database'
+      community.postgresql.postgresql_privs:
+        connect_params: {}
+        fail_on_role: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        objs: "{{ keycloak_db_config_running.name }}"
+        privs: 'CONNECT'
+        roles: "{{ keycloak_db_config_running.role.name }}"
+        ssl_mode: 'require'
+        state: 'present'
+        trust_input: true
+        type: 'database'
+
+    # PostgreSQL 15 already withholds CREATE here; USAGE remains, and nothing uses public.
+    - name: "PROCESS | Revoke PUBLIC's Privileges On The public Schema"
+      community.postgresql.postgresql_privs:
+        connect_params: {}
+        fail_on_role: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        objs: 'public'
+        privs: 'ALL'
+        roles: 'PUBLIC'
+        ssl_mode: 'require'
+        state: 'absent'
+        trust_input: true
+        type: 'schema'
+
+    # Owned by the administrator, not the role: the role can create and alter what it puts here
+    # but cannot drop the schema or grant on it, and no SET ROLE to the role is needed [INV-01].
+    - name: 'PROCESS | Create The Schema Keycloak Runs In'
+      community.postgresql.postgresql_schema:
+        cascade_drop: false
+        connect_params: {}
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        name: "{{ keycloak_db_config_running.schema }}"
+        owner: "{{ keycloak_db_config_running.administrator.username }}"
+        ssl_mode: 'require'
+        state: 'present'
+        trust_input: true
+
+    # Keycloak creates and migrates its own tables at startup, so the role owns everything in the
+    # schema it creates -- including the jdbc-ping table the nodes find each other by.
+    - name: 'PROCESS | Grant The Role USAGE And CREATE In Its Schema'
+      community.postgresql.postgresql_privs:
+        connect_params: {}
+        fail_on_role: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        objs: "{{ keycloak_db_config_running.schema }}"
+        privs: 'USAGE,CREATE'
+        roles: "{{ keycloak_db_config_running.role.name }}"
+        ssl_mode: 'require'
+        state: 'present'
+        trust_input: true
+        type: 'schema'
+
+#endregion --- [ Process: Provision The Role And Its Schema ] --------------------------------- #
+
+#region ------ [ End: Prove The Role Holds Least Privilege ] ---------------------------------- #
+
+- name: 'END | Prove The Role Holds Least Privilege'
+  block:
+
+    # As the role itself, so the password Keycloak holds is proved to open the database and the
+    # administrator is used only to write. A default ACL is stored as NULL, so acldefault()
+    # stands in for one never set, or a revoke that never happened would read as no grant at all.
+    - name: 'END | Read The Role And Its Privileges As The Role'
+      changed_when: false
+      check_mode: false
+      register: '__keycloak_db_config_shape__'
+
+      community.postgresql.postgresql_query:
+        autocommit: false
+        connect_params: {}
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.role.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.role.name }}"
+        named_args:
+          schema: "{{ keycloak_db_config_running.schema }}"
+        query: >-
+          SELECT r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls,
+                 r.rolinherit, r.rolconnlimit,
+                 has_database_privilege(current_database(), 'CONNECT') AS database_connect,
+                 has_database_privilege(current_database(), 'CREATE') AS database_create,
+                 has_database_privilege(current_database(), 'TEMP') AS database_temp,
+                 has_schema_privilege('public', 'USAGE') AS public_usage,
+                 has_schema_privilege('public', 'CREATE') AS public_create,
+                 has_schema_privilege(%(schema)s, 'USAGE') AS schema_usage,
+                 has_schema_privilege(%(schema)s, 'CREATE') AS schema_create,
+                 (SELECT pg_get_userbyid(n.nspowner) FROM pg_namespace n
+                   WHERE n.nspname = %(schema)s) AS schema_owner,
+                 (SELECT count(*) FROM pg_database d,
+                         aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
+                   WHERE d.datname = current_database() AND a.grantee = 0)
+                   AS database_public_grants,
+                 (SELECT count(*) FROM pg_namespace n,
+                         aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a
+                   WHERE n.nspname = 'public' AND a.grantee = 0) AS public_public_grants
+            FROM pg_roles r
+           WHERE r.rolname = current_user
+        ssl_mode: 'require'
+        trust_input: true
+
+    - name: 'END | Require The Role To Hold Least Privilege'
+      vars:
+        __shape__: "{{ __keycloak_db_config_shape__.query_result | first | default({}) }}"
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          The role '{{ keycloak_db_config_running.role.name }}' does not hold the declared least
+          privilege. It reads {{ __shape__ }}; declared: no SUPERUSER, CREATEROLE, CREATEDB,
+          REPLICATION, BYPASSRLS or INHERIT; connection limit
+          {{ keycloak_db_config_running.role.connection_limit }}; CONNECT but not CREATE or TEMP
+          on the database; nothing on schema public; USAGE and CREATE in schema
+          '{{ keycloak_db_config_running.schema }}', which
+          '{{ keycloak_db_config_running.administrator.username }}' owns; no privilege left to
+          PUBLIC on the database or on public.
+        quiet: true
+        that:
+          - not (__shape__.rolsuper | default(true))
+          - not (__shape__.rolcreaterole | default(true))
+          - not (__shape__.rolcreatedb | default(true))
+          - not (__shape__.rolreplication | default(true))
+          - not (__shape__.rolbypassrls | default(true))
+          - not (__shape__.rolinherit | default(true))
+          - >-
+            __shape__.rolconnlimit | default(-1) | int
+            == keycloak_db_config_running.role.connection_limit | int
+          - __shape__.database_connect | default(false)
+          - not (__shape__.database_create | default(true))
+          - not (__shape__.database_temp | default(true))
+          - not (__shape__.public_usage | default(true))
+          - not (__shape__.public_create | default(true))
+          - __shape__.schema_usage | default(false)
+          - __shape__.schema_create | default(false)
+          - >-
+            __shape__.schema_owner | default('')
+            == keycloak_db_config_running.administrator.username
+          - __shape__.database_public_grants | default(1) | int == 0
+          - __shape__.public_public_grants | default(1) | int == 0
+
+#endregion --- [ End: Prove The Role Holds Least Privilege ] ---------------------------------- #

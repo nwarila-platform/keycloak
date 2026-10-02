@@ -54,6 +54,10 @@ jobs:
       - name: Check dependency declarations
         run: python3 scripts/check-dependencies.py
 
+      # Known-answer tests for the role's SCRAM verifier filter (RFC 7677's published exchange).
+      - name: Test the SCRAM verifier filter
+        run: python3 -m unittest discover -s ansible/applications/keycloak_db_config/tests
+
       - name: Lint YAML
         if: steps.detect.outputs.has_ansible == 'true'
         run: yamllint -c .yamllint.yml ansible

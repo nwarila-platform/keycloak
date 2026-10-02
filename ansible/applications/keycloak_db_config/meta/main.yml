@@ -1,0 +1,44 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/meta/main.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Role metadata for keycloak_db_config. Description-only: NOT an enforcing argument spec. The
+# role's tasks/validate.yml enforces its merged-config guards.
+#
+# REQUIRED INPUTS -- declared empty in defaults and supplied by the playbook, because each names
+# one particular database:
+#
+#   keycloak_db_config.host, .port, .name
+#                                The PostgreSQL server and the database Keycloak runs in.
+#   keycloak_db_config.administrator.username
+#   keycloak_db_config.administrator.password
+#                                The database's administrative credential. It provisions the role
+#                                and owns the schema; the node receives it only as module
+#                                parameters the modules mask, never on disk.
+#   keycloak_db_config.role.name, .password, .connection_limit
+#                                The login role Keycloak runs as, its password (sent as a SCRAM
+#                                verifier), and the most connections it may hold.
+#   keycloak_db_config.schema    The schema Keycloak creates its tables in.
+#
+# Collections: community.postgresql >= 5.0.0 (the first release tested on ansible-core 2.21).
+# ============================================================================================= #
+---
+galaxy_info:
+  role_name: 'keycloak_db_config'
+  namespace: 'nwarila_platform'
+  author: 'nwarila-platform'
+  description: >-
+    Provisions the PostgreSQL role and schema Keycloak runs as, using the database's
+    administrative credential: a login role with no administrative attribute and a bounded
+    connection count, CONNECT on its database, and USAGE and CREATE in a schema the administrator
+    owns, with PUBLIC's default privileges revoked -- then reads that shape back as the role
+    itself.
+  license: 'MIT'
+  min_ansible_version: '2.21'
+  platforms:
+    - name: 'EL'
+      versions:
+        - '8'
+  galaxy_tags: ['rhel', 'cis', 'stig', 'keycloak', 'postgresql', 'database']
+
+dependencies: []
