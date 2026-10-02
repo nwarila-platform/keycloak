@@ -28,6 +28,8 @@ its SHA-256 pin, and the administrator password, deliberately without a digest.
 
 `aws/estate.yml` is new in this repository. It declares the standing, zero-cost objects the pinned
 aws-terraform-framework consumes but never creates:
+- the AWS managed keys `aws/rds` and `aws/secretsmanager`, which the database's storage and master
+  secret use, and which an account lacks until a service first uses them;
 - the RDS and Elastic Load Balancing service-linked roles, which a first create needs;
 - the `keycloak` DB subnet group, whose subnets resolve at apply time to the subnets
   `terraform/aws.tfvars` places systems in, so a subnet is named in exactly one file;
@@ -78,8 +80,9 @@ new to the fleet.
   before a database is declared.
   Both are AWS managed keys whose key policies admit the account's principals through their own
   service, and both are free. The `kms:DescribeKey` RDS requires on them comes from the baseline
-  `runner_kms`. The provider's alias lookup is itself a DescribeKey, which associates an AWS
-  managed key the account has not used before.
+  `runner_kms`. An account has no AWS managed key for a service until something first uses it,
+  and the framework's alias lookup then fails, so `estate.yml` declares both keys and the apply
+  creates any that is missing (see "Measured" below).
 
 **`nwarila-platform_keycloak_runner_elb`** creates and deletes one application load balancer,
 `keycloak`, with its listeners and its provider-named (`tf-`) target groups.
@@ -203,9 +206,10 @@ Verify it with exactly:
 The credential-free validator, `scripts/check-dependencies.py`, also checks:
 - schemas, metadata, attachments and object closure;
 - tokens, literals, canonical JSON and symlinks;
+- that no policy or trust uses `NotAction`, `NotResource` or `NotPrincipal`;
 - divergence references;
-- that the estate is closed, names no subnet, VPC, security group id or address, and that its
-  subnet group is the one `runner_rds` authorizes;
+- that the estate is closed, names no subnet, VPC, security group id or address, declares no
+  security group rule twice, and that its subnet group is the one `runner_rds` authorizes;
 - that each role stays within the default managed-policy quota;
 - that the playbook's installer pin equals the declared artifact, and that it reads every declared
   secret;
@@ -233,6 +237,13 @@ The documents use `<account-id>`, `<owner-id>`, `<repository-id>` and `<region>`
   `aws:rds:primaryDBInstanceArn`. The secret-read statements therefore use the global key: it is
   the key AWS recommends, Secrets Manager supports it for `GetSecretValue`, and the apply's
   simulations can evidence it.
+
+  The first HA deploy (2026-10-01) failed at `terraform apply` with "reading KMS Alias
+  (alias/aws/secretsmanager): empty result". `ListAliases` did not list that alias at all,
+  because the account had never used the Secrets Manager key. The audit belief that the
+  provider's lookup would create the key was wrong: the lookup fails before anything calls
+  DescribeKey. A DescribeKey on the alias created the key, and `estate.yml` now declares both of
+  the database's keys.
 - **Keycloak uses the RDS master user.** The database exists only for Keycloak and only for one
   run, so a separate application role would protect nothing the run does not already destroy. A
   persistent deployment must create one.
