@@ -86,12 +86,13 @@ keycloak_defaults:
   service: 'keycloak'
 
   # The database every node shares. It is also how the nodes find each other: the 26.x default
-  # cache stack, jdbc-ping, registers each node in it. Its address and credentials change with
-  # every stack, so the playbook supplies them.
+  # cache stack, jdbc-ping, registers each node in it. Its address, its credentials and the
+  # schema Keycloak runs in change with every stack, so the playbook supplies them.
   database:
     host: ''
     port: 5432
     name: ''
+    schema: ''
     username: ''
     password: ''
     # A db.t4g.micro admits about eighty connections; Keycloak's default pool of 100 per node

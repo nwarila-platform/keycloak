@@ -1,0 +1,65 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/validate.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Validates the merged keycloak_db_config configuration on the CONTROLLER, before anything
+# touches the guest. Every name below reaches SQL as an identifier, so this is also the one place
+# their shape is checked; the tasks pass them to the modules with trust_input. meta/main.yml
+# describes these inputs; this file enforces them.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Validate: The Database And Its Administrator ] ------------------------------- #
+
+# check: safety-critical -- absent drops the role and the schema by these names; a role named
+# as the administrator would be altered by present and dropped by absent.
+- name: 'VALIDATE | Require The Database, Its Administrator, The Role And The Schema'
+  when: (state | default('present') | string | lower | trim) in ['present', 'absent']
+
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to continue: the playbook must supply host, name, administrator.username,
+      administrator.password, role.name and schema, each name an identifier, and port a positive
+      integer; the role must not be the administrator, or present would alter, and absent drop,
+      the administrator. No password is echoed. Got host
+      '{{ keycloak_db_config_running.host | default('') }}', port
+      '{{ keycloak_db_config_running.port | default('') }}', name
+      '{{ keycloak_db_config_running.name | default('') }}', administrator
+      '{{ keycloak_db_config_running.administrator.username | default('') }}', role
+      '{{ keycloak_db_config_running.role.name | default('') }}', schema
+      '{{ keycloak_db_config_running.schema | default('') }}'.
+    quiet: true
+    that:
+      - keycloak_db_config_running.host | default('') is match('^[A-Za-z0-9.-]+$')
+      - keycloak_db_config_running.port | default(0) | int > 0
+      - keycloak_db_config_running.name | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - >-
+        keycloak_db_config_running.administrator.username | default('')
+        is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_db_config_running.administrator.password | default('') | length > 0
+      - keycloak_db_config_running.role.name | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_db_config_running.schema | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - >-
+        keycloak_db_config_running.role.name
+        != keycloak_db_config_running.administrator.username
+
+#endregion --- [ Validate: The Database And Its Administrator ] ------------------------------- #
+
+#region ------ [ Validate: What The Role Is Created With ] ------------------------------------ #
+
+# check: only present creates the role, so only present needs its password and its bound.
+- name: 'VALIDATE | Require The Role Password And Connection Limit'
+  when: (state | default('present') | string | lower | trim) == 'present'
+
+  ansible.builtin.assert:
+    fail_msg: >-
+      Refusing to deploy: the playbook must supply role.password and a positive
+      role.connection_limit. Got connection_limit
+      '{{ keycloak_db_config_running.role.connection_limit | default('') }}'.
+    quiet: true
+    that:
+      - keycloak_db_config_running.role.password | default('') | length > 0
+      - keycloak_db_config_running.role.connection_limit | default(0) | int > 0
+
+#endregion --- [ Validate: What The Role Is Created With ] ------------------------------------ #

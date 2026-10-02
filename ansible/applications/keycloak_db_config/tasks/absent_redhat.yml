@@ -1,0 +1,151 @@
+# ============================================================================================= #
+# File: '{{ role_path }}/tasks/absent_redhat.yml'
+# --- [ Description ] ------------------------------------------------------------------------- #
+#
+# Removes what present created: the schema, with EVERY realm, user, client and session Keycloak
+# stored in it, and the role. It leaves PUBLIC's revoked privileges revoked -- they harden the
+# database as a whole, not the role -- and the Python driver installed, a shared system package
+# this role cannot tell nothing else uses. Keycloak must already be stopped; the playbook runs
+# this after removing it from every node.
+#
+# BEGIN reads whether the role exists. PROCESS drops the schema, withdraws the role's CONNECT and
+# drops the role. END reads that neither remains. A second run changes nothing.
+#
+# ============================================================================================= #
+---
+
+#region ------ [ Begin: Read The Database ] --------------------------------------------------- #
+
+- name: 'BEGIN | Read Whether The Role Exists'
+  changed_when: false
+  check_mode: false
+  register: '__keycloak_db_config_role__'
+
+  community.postgresql.postgresql_query:
+    autocommit: false
+    connect_params: {}
+    login_db: "{{ keycloak_db_config_running.name }}"
+    login_host: "{{ keycloak_db_config_running.host }}"
+    login_password: "{{ keycloak_db_config_running.administrator.password }}"
+    login_port: "{{ keycloak_db_config_running.port | int }}"
+    login_unix_socket: ''
+    login_user: "{{ keycloak_db_config_running.administrator.username }}"
+    named_args:
+      role: "{{ keycloak_db_config_running.role.name }}"
+    query: 'SELECT count(*) AS roles FROM pg_roles WHERE rolname = %(role)s'
+    ssl_mode: 'require'
+    trust_input: true
+
+#endregion --- [ Begin: Read The Database ] --------------------------------------------------- #
+
+#region ------ [ Process: Remove The Role And Its Schema ] ------------------------------------ #
+
+# trust_input: every name put into SQL was checked as an identifier by validate.yml.
+- name: 'PROCESS | Remove The Role And Its Schema'
+  block:
+
+    # The schema's owner may drop it with everything in it, including the tables the role owns.
+    - name: 'PROCESS | Drop The Schema And Everything Keycloak Stored In It'
+      community.postgresql.postgresql_schema:
+        cascade_drop: true
+        connect_params: {}
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        name: "{{ keycloak_db_config_running.schema }}"
+        owner: ''
+        ssl_mode: 'require'
+        state: 'absent'
+        trust_input: true
+
+    # DROP ROLE refuses while the role holds a privilege, and a revoke naming a role that no
+    # longer exists fails, so this runs only while the role does.
+    - name: 'PROCESS | Revoke The Role''s CONNECT On The Database'
+      when: (__keycloak_db_config_role__.query_result | first).roles | int > 0
+
+      community.postgresql.postgresql_privs:
+        connect_params: {}
+        fail_on_role: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        objs: "{{ keycloak_db_config_running.name }}"
+        privs: 'CONNECT'
+        roles: "{{ keycloak_db_config_running.role.name }}"
+        ssl_mode: 'require'
+        state: 'absent'
+        trust_input: true
+        type: 'database'
+
+    - name: 'PROCESS | Drop The Role'
+      community.postgresql.postgresql_user:
+        configuration: {}
+        connect_params: {}
+        encrypted: true
+        fail_on_user: true
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        name: "{{ keycloak_db_config_running.role.name }}"
+        no_password_changes: false
+        quote_configuration_values: true
+        reset_unspecified_configuration: false
+        role_attr_flags: ''
+        ssl_mode: 'require'
+        state: 'absent'
+        trust_input: true
+
+#endregion --- [ Process: Remove The Role And Its Schema ] ------------------------------------ #
+
+#region ------ [ End: Prove Neither Remains ] ------------------------------------------------- #
+
+- name: 'END | Prove Neither The Role Nor The Schema Remains'
+  block:
+
+    - name: 'END | Read Whether The Role Or The Schema Remains'
+      changed_when: false
+      check_mode: false
+      register: '__keycloak_db_config_remains__'
+
+      community.postgresql.postgresql_query:
+        autocommit: false
+        connect_params: {}
+        login_db: "{{ keycloak_db_config_running.name }}"
+        login_host: "{{ keycloak_db_config_running.host }}"
+        login_password: "{{ keycloak_db_config_running.administrator.password }}"
+        login_port: "{{ keycloak_db_config_running.port | int }}"
+        login_unix_socket: ''
+        login_user: "{{ keycloak_db_config_running.administrator.username }}"
+        named_args:
+          role: "{{ keycloak_db_config_running.role.name }}"
+          schema: "{{ keycloak_db_config_running.schema }}"
+        query: >-
+          SELECT (SELECT count(*) FROM pg_roles WHERE rolname = %(role)s) AS roles,
+                 (SELECT count(*) FROM pg_namespace WHERE nspname = %(schema)s) AS schemas
+        ssl_mode: 'require'
+        trust_input: true
+
+    - name: 'END | Require Neither The Role Nor The Schema To Remain'
+      vars:
+        __remains__: "{{ __keycloak_db_config_remains__.query_result | first }}"
+
+      ansible.builtin.assert:
+        fail_msg: >-
+          Removal is incomplete: {{ __remains__.roles }} role named
+          '{{ keycloak_db_config_running.role.name }}' and {{ __remains__.schemas }} schema named
+          '{{ keycloak_db_config_running.schema }}' remain.
+        quiet: true
+        that:
+          - __remains__.roles | int == 0
+          - __remains__.schemas | int == 0
+
+#endregion --- [ End: Prove Neither Remains ] ------------------------------------------------- #

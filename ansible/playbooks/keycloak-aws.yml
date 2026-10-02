@@ -11,7 +11,8 @@
 #
 # The workflow passes what Terraform built -- the database's address and the ARN of the secret
 # RDS keeps its master credentials in, and the load balancer's name -- as extra-vars, as it does
-# the account and the region, so the play and the stack cannot disagree.
+# the account and the region, so the play and the stack cannot disagree. The master credential
+# provisions the role Keycloak runs as, from one node, and goes nowhere else.
 #
 # Runs from the composed tree: the workflow overlays this repository onto the pinned framework
 # and uses its configuration, role search path, connection defaults, and explicit fact gathering.
@@ -108,6 +109,73 @@
 
 #endregion --- [ Play: Prepare The Hosts ] ---------------------------------------------------- #
 
+#region ------ [ Play: Provision Keycloak's Database Role ] ----------------------------------- #
+# Before any node starts Keycloak, whose first start creates its tables as that role. Only this
+# play and the Remove play read the master credential, each on one node: the inventory orders
+# hosts by instance id, so [0] is the same node in every invocation -- the Keycloak play's first
+# batch -- and the second converge finds the driver already installed.
+
+- name: 'PLAY | Provision Keycloak''s Database Role (ephemeral AWS)'
+  hosts: 'keycloak_servers[0]'
+  any_errors_fatal: true
+  become: false
+  tags: ['products']
+  vars:
+    # Stated once, in the first play that uses any of them, for the host firewall, both roles and
+    # the proof. 7800 carries the cluster's cache traffic and 57800 its failure detection
+    # (7800 + 50000).
+    <<: &keycloak_service
+      keycloak_http_port: 8080
+      keycloak_management_port: 9000
+      keycloak_cluster_ports: [ 7800, 57800 ]
+      keycloak_service_name: 'keycloak'
+      keycloak_administrator: 'admin'
+      keycloak_database_name: 'keycloak'
+      keycloak_database_schema: 'keycloak'
+      keycloak_database_role_name: 'keycloak'
+      keycloak_database_pool_max_size: 20
+      # One password per database, kept on the controller: both converges template it afresh,
+      # and each must read the value the first one wrote. RDS mints the master secret per
+      # instance, so it names the file.
+      keycloak_database_password: >-
+        {{ lookup('ansible.builtin.password',
+                  '~/.ansible/keycloak/'
+                  ~ (keycloak_database.master_user_secret_arn | hash('sha256')) ~ '.password',
+                  chars=['ascii_letters', 'digits'], length=40) }}
+
+    # RDS keeps the master credentials in Secrets Manager and rotates them; they are read on the
+    # controller, and only by the plays that provision and remove the role.
+    keycloak_database_credentials: &keycloak_database_credentials >-
+      {{ lookup('amazon.aws.secretsmanager_secret', keycloak_database.master_user_secret_arn,
+                region=aws_region) | from_json }}
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+    - role: 'keycloak_db_config'
+      when: (state | default('present') | string | lower | trim) == 'present'
+      vars:
+        keycloak_db_config: &keycloak_db_config
+          # The role stages nothing on the node, so the loader creates no temporary directory.
+          temp_dir: false
+          host: "{{ keycloak_database.address }}"
+          port: "{{ keycloak_database.port }}"
+          name: "{{ keycloak_database_name }}"
+          schema: "{{ keycloak_database_schema }}"
+          administrator:
+            username: "{{ keycloak_database_credentials.username }}"
+            password: "{{ keycloak_database_credentials.password }}"
+          role:
+            name: "{{ keycloak_database_role_name }}"
+            password: "{{ keycloak_database_password }}"
+            # Every node's pool at its ceiling, one more for the role's own check, and one more
+            # because PostgreSQL enforces the limit only approximately.
+            connection_limit: >-
+              {{ keycloak_database_pool_max_size * (groups['keycloak_servers'] | length) + 2 }}
+
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Provision Keycloak's Database Role ] ----------------------------------- #
+
 #region ------ [ Play: Keycloak ] ------------------------------------------------------------- #
 # One node at a time: the first to start against the empty database creates its schema and the
 # first administrator, and the second joins a cluster that already serves. Keycloak supports
@@ -125,20 +193,7 @@
   serial: 1
   tags: ['products']
   vars:
-    # Stated once for the host firewall, the role and the proof. 7800 carries the cluster's cache
-    # traffic and 57800 its failure detection (7800 + 50000).
-    <<: &keycloak_service
-      keycloak_http_port: 8080
-      keycloak_management_port: 9000
-      keycloak_cluster_ports: [ 7800, 57800 ]
-      keycloak_service_name: 'keycloak'
-      keycloak_administrator: 'admin'
-
-    # RDS keeps the master credentials in Secrets Manager and rotates them; they are read here, on
-    # the controller, when the role needs them, and never written to the log.
-    keycloak_database_credentials: >-
-      {{ lookup('amazon.aws.secretsmanager_secret', keycloak_database.master_user_secret_arn,
-                region=aws_region) | from_json }}
+    <<: *keycloak_service
 
   #region ------ [ Pre-Tasks: The Host Firewall Is nftables ] -------------------------------- #
   # The fleet decision nessus records: the host firewall is nftables itself, not firewalld. The
@@ -243,9 +298,11 @@
           database:
             host: "{{ keycloak_database.address }}"
             port: "{{ keycloak_database.port }}"
-            name: 'keycloak'
-            username: "{{ keycloak_database_credentials.username }}"
-            password: "{{ keycloak_database_credentials.password }}"
+            name: "{{ keycloak_database_name }}"
+            schema: "{{ keycloak_database_schema }}"
+            username: "{{ keycloak_database_role_name }}"
+            password: "{{ keycloak_database_password }}"
+            pool_max_size: "{{ keycloak_database_pool_max_size }}"
 
           administrator:
             username: "{{ keycloak_administrator }}"
@@ -256,6 +313,32 @@
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Keycloak ] ------------------------------------------------------------- #
+
+#region ------ [ Play: Remove Keycloak's Database Role ] -------------------------------------- #
+# state=absent only, and after the Keycloak play has stopped and removed Keycloak on every node:
+# it drops the schema with EVERY realm, user, client and session Keycloak stored, and then the
+# role. Present needs the role before Keycloak's first start; absent must stop Keycloak before
+# dropping what it runs in -- hence two plays around the Keycloak play rather than one.
+
+- name: 'PLAY | Remove Keycloak''s Database Role (ephemeral AWS)'
+  hosts: 'keycloak_servers[0]'
+  any_errors_fatal: true
+  become: false
+  tags: ['products']
+  vars:
+    <<: *keycloak_service
+    keycloak_database_credentials: *keycloak_database_credentials
+
+  #region ------ [ Roles ] -------------------------------------------------------------------- #
+  roles:
+    - role: 'keycloak_db_config'
+      when: (state | default('present') | string | lower | trim) == 'absent'
+      vars:
+        keycloak_db_config: *keycloak_db_config
+
+  #endregion --- [ Roles ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Remove Keycloak's Database Role ] -------------------------------------- #
 
 #region ------ [ Play: Prove The Cluster Survives Losing A Node (opt-in) ] -------------------- #
 # What makes this deployment highly available, proved rather than assumed:

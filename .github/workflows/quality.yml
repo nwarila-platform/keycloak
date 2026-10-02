@@ -54,6 +54,15 @@ jobs:
       - name: Check dependency declarations
         run: python3 scripts/check-dependencies.py
 
+      # No -t . and no __init__.py: a package named ansible/ at the root would shadow ansible-core.
+      - name: Run the roles' unit tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for tests in ansible/applications/*/tests; do
+            python3 -m unittest discover -s "${tests}"
+          done
+
       - name: Lint YAML
         if: steps.detect.outputs.has_ansible == 'true'
         run: yamllint -c .yamllint.yml ansible

@@ -17,7 +17,8 @@
 #                                token and redirect is issued under it.
 #   keycloak.database.host       The shared PostgreSQL every node uses; also the registry by
 #   keycloak.database.name       which the nodes find each other (the jdbc-ping cache stack).
-#   keycloak.database.username   The database account, and its password: passed to Keycloak
+#   keycloak.database.schema     The schema Keycloak creates its tables in.
+#   keycloak.database.username   The database role, and its password: passed to Keycloak
 #   keycloak.database.password   verbatim through a root-only environment file, never logged.
 #   keycloak.administrator.password
 #                                The first administrator, created only while the master realm

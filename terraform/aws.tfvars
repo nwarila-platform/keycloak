@@ -385,7 +385,8 @@ all_databases = [
     # Keycloak 26.7 supports, and the runner may reference only PostgreSQL 17's default groups.
     engine_version                      = "17"
     instance_class                      = "db.t4g.micro"
-    username                            = "keycloak"
+    # Administers the database only: Keycloak runs as its own role, named keycloak.
+    username                            = "keycloak_admin"
     manage_master_user_password         = true
     iam_database_authentication_enabled = false
     # Both keys are AWS managed and free. An AWS managed key works only through its own service,

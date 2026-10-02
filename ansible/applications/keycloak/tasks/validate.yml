@@ -73,12 +73,13 @@
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to deploy: the playbook must supply hostname (an http or https URL with no path),
-      database.host, database.name, database.username and database.password, and
+      database.host, database.name, database.schema, database.username and database.password, and
       administrator.password; database.port and database.pool_max_size must be positive
       integers. Got hostname '{{ keycloak_running.hostname | default('') }}', database host
       '{{ keycloak_running.database.host | default('') }}', port
       '{{ keycloak_running.database.port | default('') }}', name
-      '{{ keycloak_running.database.name | default('') }}', username
+      '{{ keycloak_running.database.name | default('') }}', schema
+      '{{ keycloak_running.database.schema | default('') }}', username
       '{{ keycloak_running.database.username | default('') }}'.
     quiet: true
     that:
@@ -86,6 +87,7 @@
       - keycloak_running.database.host | default('') is match('^[A-Za-z0-9.-]+$')
       - keycloak_running.database.port | default(0) | int > 0
       - keycloak_running.database.name | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.schema | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
       - keycloak_running.database.username | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
       - keycloak_running.database.password | default('') | length > 0
       - keycloak_running.database.pool_max_size | default(0) | int > 0
