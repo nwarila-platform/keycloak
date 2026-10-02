@@ -69,9 +69,11 @@ else uses. A second `absent` run changes nothing.
    that schema, two nodes created all 346 relations there, owned by the role, formed one cluster,
    and created, changed and deleted a realm. `kc.sh build --help` does not list `db-schema`, so it
    is a run-time option. Measured on 2026-10-02 against PostgreSQL 17 with a non-superuser
-   administrator standing in for the RDS master; on RDS, END proves the role's privileges on every
-   deploy. Consequence: the schema stays the administrator's, and no SET ROLE to the role is
-   needed.
+   administrator standing in for the RDS master, then on RDS PostgreSQL 17 in AWS Deploy run
+   37061257295 the same day: the master provisioned this shape, END passed as the role, and two
+   nodes formed one cluster, carried a realm change between them and survived losing one. END
+   proves the role's privileges on every deploy. Consequence: the schema stays the
+   administrator's, and no SET ROLE to the role is needed.
 2. [INV-02] fapolicyd's rpm plugin notifies the daemon of a new package (documented: RHEL 8's
    fapolicyd guide, "The plugin notifies the fapolicyd daemon"), and a notified daemon reloads
    its trust behind the notification: the keycloak role measured a deny 84 ms after
