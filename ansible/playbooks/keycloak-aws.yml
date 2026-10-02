@@ -150,6 +150,7 @@
         name: 'nftables'
         state: 'present'
 
+    # credential_resolver publishes a port the winning set leaves out as null, so SSH's own 22.
     - name: 'PROCESS | Write The Host nftables Ruleset'
       register: '__keycloak_nftables_ruleset__'
       vars:
@@ -169,7 +170,7 @@
                   ip saddr 127.0.0.0/8 drop
                   ip6 saddr ::1 drop
                   meta l4proto { icmp, ipv6-icmp } accept
-                  tcp dport {{ ansible_port | default(22) }} ct state new limit rate 25/second burst 50 packets accept
+                  tcp dport {{ ansible_port | default(22, true) }} ct state new limit rate 25/second burst 50 packets accept
           {% if __keycloak_open__ | bool %}
                   tcp dport { {{ keycloak_http_port }}, {{ keycloak_management_port }} } ct state new limit rate 25/second burst 50 packets accept
                   tcp dport { {{ keycloak_cluster_ports | join(', ') }} } ct state new limit rate 25/second burst 50 packets accept
