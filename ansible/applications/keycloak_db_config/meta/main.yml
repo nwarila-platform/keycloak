@@ -8,7 +8,7 @@
 # REQUIRED INPUTS -- declared empty in defaults and supplied by the playbook, because each names
 # one particular database:
 #
-#   keycloak_db_config.host, .port, .name
+#   keycloak_db_config.host, .name
 #                                The PostgreSQL server and the database Keycloak runs in.
 #   keycloak_db_config.administrator.username
 #   keycloak_db_config.administrator.password

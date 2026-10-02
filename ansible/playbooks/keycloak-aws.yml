@@ -111,10 +111,11 @@
 
 #region ------ [ Play: Provision Keycloak's Database Role ] ----------------------------------- #
 # Before any node starts Keycloak, whose first start creates its tables as that role. Only this
-# play reads the master credential, and it runs on one node: the inventory orders hosts by
-# instance id, so [0] is the same node in every invocation -- the Keycloak play's first batch.
+# play and the Remove play read the master credential, each on one node: the inventory orders
+# hosts by instance id, so [0] is the same node in every invocation -- the Keycloak play's first
+# batch.
 
-- name: "PLAY | Provision Keycloak's Database Role (ephemeral AWS)"
+- name: 'PLAY | Provision Keycloak''s Database Role (ephemeral AWS)'
   hosts: 'keycloak_servers[0]'
   any_errors_fatal: true
   become: false
@@ -133,9 +134,9 @@
       keycloak_database_schema: 'keycloak'
       keycloak_database_role_name: 'keycloak'
       keycloak_database_pool_max_size: 20
-      # One password per database, kept on the controller: each of the workflow's three
-      # invocations templates it afresh, and every one must read the same value. RDS mints the
-      # master secret per instance, so it names the file.
+      # One password per database, kept on the controller: both converges template it afresh,
+      # and each must read the value the first one wrote. RDS mints the master secret per
+      # instance, so it names the file.
       keycloak_database_password: >-
         {{ lookup('ansible.builtin.password',
                   '~/.ansible/keycloak/'
@@ -154,6 +155,8 @@
       when: (state | default('present') | string | lower | trim) == 'present'
       vars:
         keycloak_db_config: &keycloak_db_config
+          # The role stages nothing on the node, so the loader creates no temporary directory.
+          temp_dir: false
           host: "{{ keycloak_database.address }}"
           port: "{{ keycloak_database.port }}"
           name: "{{ keycloak_database_name }}"
@@ -317,7 +320,7 @@
 # role. Present needs the role before Keycloak's first start; absent must stop Keycloak before
 # dropping what it runs in -- hence two plays around the Keycloak play rather than one.
 
-- name: "PLAY | Remove Keycloak's Database Role (ephemeral AWS)"
+- name: 'PLAY | Remove Keycloak''s Database Role (ephemeral AWS)'
   hosts: 'keycloak_servers[0]'
   any_errors_fatal: true
   become: false

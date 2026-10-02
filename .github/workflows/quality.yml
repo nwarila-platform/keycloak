@@ -54,9 +54,16 @@ jobs:
       - name: Check dependency declarations
         run: python3 scripts/check-dependencies.py
 
-      # Known-answer tests for the role's SCRAM verifier filter (RFC 7677's published exchange).
-      - name: Test the SCRAM verifier filter
-        run: python3 -m unittest discover -s ansible/applications/keycloak_db_config/tests
+      # No -t . and no __init__.py: a package named ansible/ at the root would shadow ansible-core.
+      - name: Run the roles' unit tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for tests in ansible/applications/*/tests; do
+            # A role's tests/ may hold only galaxy's playbook layout; discover exits 5 on no tests.
+            compgen -G "$tests/test_*.py" > /dev/null || continue
+            python3 -m unittest discover -s "$tests"
+          done
 
       - name: Lint YAML
         if: steps.detect.outputs.has_ansible == 'true'

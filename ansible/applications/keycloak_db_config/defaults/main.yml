@@ -17,19 +17,23 @@ keycloak_db_config_defaults:
 
   #region ------ [ Database ] ----------------------------------------------------------------- #
 
+  # The PostgreSQL server and the database Keycloak runs in.
   host: ''
   port: 5432
   name: ''
 
+  # The database's administrative credential: it provisions the role and owns the schema.
   administrator:
     username: ''
     password: ''
 
+  # The login role Keycloak runs as, and the most connections it may hold.
   role:
     name: ''
     password: ''
     connection_limit: 0
 
+  # The schema Keycloak creates its tables in.
   schema: ''
 
   #endregion --- [ Database ] ----------------------------------------------------------------- #

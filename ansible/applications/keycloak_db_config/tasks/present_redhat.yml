@@ -34,77 +34,78 @@
 #region ------ [ Process: Install The Python Driver ] ----------------------------------------- #
 
 - name: 'PROCESS | Install The Python Driver'
-  become: true
-  register: '__keycloak_db_config_driver__'
+  vars:
+    __driver_install_required__: >-
+      {{ keycloak_db_config_running.python_driver_package
+         not in (ansible_facts.packages | default({})) }}
+  block:
 
-  ansible.builtin.dnf:
-    allow_downgrade: false
-    allowerasing: false
-    autoremove: false
-    bugfix: false
-    cacheonly: false
-    disable_gpg_check: false
-    disable_plugin: []
-    disablerepo: []
-    download_only: false
-    enable_plugin: []
-    enablerepo: []
-    exclude: []
-    install_weak_deps: true
-    installroot: '/'
-    lock_timeout: 30
-    name: [ "{{ keycloak_db_config_running.python_driver_package }}" ]
-    security: false
-    skip_broken: false
-    sslverify: true
-    state: 'present'
-    update_cache: false
-    update_only: false
-    use_backend: 'auto'
-    validate_certs: true
+    - name: 'PROCESS | Install The Python Driver Package'
+      become: true
 
-# The rpm plugin only notifies fapolicyd of a new package, and the daemon reloads behind it, so a
-# module started at once can still be judged by the old database -- and the modules run as the
-# SSH user, whom RHEL's default rules let open an untrusted shared library only when trusted. The
-# loaded database is read until it carries the driver; a reload that never lands fails here,
-# naming fapolicyd, not later as an import error.
-# rc-contract: grep(1) exits 0 when a line matches and 1 when none does.
-- name: 'PROCESS | Wait Until fapolicyd Has Loaded The Driver'
-  become: true
-  changed_when: false
-  delay: 2
-  register: '__keycloak_db_config_driver_trusted__'
-  retries: 30
-  until: __keycloak_db_config_driver_trusted__.rc == 0
-  when:
-    - (__keycloak_db_config_fapolicyd__.stdout | default('') | trim) == 'active'
-    - __keycloak_db_config_driver__ is changed
+      ansible.builtin.dnf:
+        allow_downgrade: false
+        allowerasing: false
+        autoremove: false
+        bugfix: false
+        cacheonly: false
+        disable_gpg_check: false
+        disable_plugin: []
+        disablerepo: []
+        download_only: false
+        enable_plugin: []
+        enablerepo: []
+        exclude: []
+        install_weak_deps: true
+        installroot: '/'
+        lock_timeout: 30
+        name: [ "{{ keycloak_db_config_running.python_driver_package }}" ]
+        security: false
+        skip_broken: false
+        sslverify: true
+        state: 'present'
+        update_cache: false
+        update_only: false
+        use_backend: 'auto'
+        validate_certs: true
 
-  ansible.builtin.command:
-    argv:
-      - 'bash'
-      - '-c'
-      - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
-      - 'trust-probe'
-      - "{{ keycloak_db_config_running.python_driver_path }}"
-    expand_argument_vars: false
-    stdin_add_newline: true
-    strip_empty_ends: true
+    # fapolicyd loads a new package's trust behind the install, and the modules run as the SSH
+    # user, whom RHEL's default rules deny an untrusted shared library [INV-02].
+    # rc-contract: grep(1) exits 0 when a line matches and 1 when none does.
+    - name: 'PROCESS | Wait Until fapolicyd Has Loaded The Driver'
+      become: true
+      changed_when: false
+      delay: 2
+      register: '__keycloak_db_config_driver_trusted__'
+      retries: 30
+      until: __keycloak_db_config_driver_trusted__.rc == 0
+      when:
+        - (__keycloak_db_config_fapolicyd__.stdout | default('') | trim) == 'active'
+        - __driver_install_required__ | bool
+
+      ansible.builtin.command:
+        argv:
+          - 'bash'
+          - '-c'
+          - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
+          - 'trust-probe'
+          - "{{ keycloak_db_config_running.python_driver_path }}"
+        expand_argument_vars: false
+        stdin_add_newline: true
+        strip_empty_ends: true
 
 #endregion --- [ Process: Install The Python Driver ] ----------------------------------------- #
 
 #region ------ [ Process: Provision The Role And Its Schema ] --------------------------------- #
 
-# Every task logs in as the administrator over TLS (the server refuses anything else).
-# trust_input stays on: every name these tasks put into SQL was checked as an identifier by
-# validate.yml, and every password is bound as a parameter. Both passwords reach the modules only
-# as parameters their argument specs mask, which also scrubs them from every result.
+# trust_input stays on: every name put into SQL was checked as an identifier by validate.yml.
+# Both passwords reach the modules only as parameters their argument specs mask, which scrubs
+# them from every result; statement text carries at most the verifier, never a password.
 - name: 'PROCESS | Provision The Role And Its Schema'
   block:
 
-    # The role is created with a SCRAM verifier, so the password itself never reaches the server.
-    # On RDS the administrator cannot read pg_authid, so without no_password_changes the module
-    # would send the password again on every run and report a change it did not make.
+    # The verifier is salted afresh each run and RDS hides pg_authid, so without
+    # no_password_changes every run would rewrite the password and report changed.
     - name: 'PROCESS | Create The Role Keycloak Runs As'
       community.postgresql.postgresql_user:
         configuration: {}
@@ -130,7 +131,7 @@
         trust_input: true
 
     # By default every role may connect to a new database and create temporary tables in it.
-    - name: "PROCESS | Revoke PUBLIC's Privileges On The Database"
+    - name: 'PROCESS | Revoke PUBLIC''s Privileges On The Database'
       community.postgresql.postgresql_privs:
         connect_params: {}
         fail_on_role: true
@@ -167,7 +168,7 @@
         type: 'database'
 
     # PostgreSQL 15 already withholds CREATE here; USAGE remains, and nothing uses public.
-    - name: "PROCESS | Revoke PUBLIC's Privileges On The public Schema"
+    - name: 'PROCESS | Revoke PUBLIC''s Privileges On The public Schema'
       community.postgresql.postgresql_privs:
         connect_params: {}
         fail_on_role: true
@@ -275,7 +276,7 @@
 
     - name: 'END | Require The Role To Hold Least Privilege'
       vars:
-        __shape__: "{{ __keycloak_db_config_shape__.query_result | first | default({}) }}"
+        __shape__: "{{ __keycloak_db_config_shape__.query_result | first }}"
 
       ansible.builtin.assert:
         fail_msg: >-
@@ -289,26 +290,22 @@
           PUBLIC on the database or on public.
         quiet: true
         that:
-          - not (__shape__.rolsuper | default(true))
-          - not (__shape__.rolcreaterole | default(true))
-          - not (__shape__.rolcreatedb | default(true))
-          - not (__shape__.rolreplication | default(true))
-          - not (__shape__.rolbypassrls | default(true))
-          - not (__shape__.rolinherit | default(true))
-          - >-
-            __shape__.rolconnlimit | default(-1) | int
-            == keycloak_db_config_running.role.connection_limit | int
-          - __shape__.database_connect | default(false)
-          - not (__shape__.database_create | default(true))
-          - not (__shape__.database_temp | default(true))
-          - not (__shape__.public_usage | default(true))
-          - not (__shape__.public_create | default(true))
-          - __shape__.schema_usage | default(false)
-          - __shape__.schema_create | default(false)
-          - >-
-            __shape__.schema_owner | default('')
-            == keycloak_db_config_running.administrator.username
-          - __shape__.database_public_grants | default(1) | int == 0
-          - __shape__.public_public_grants | default(1) | int == 0
+          - not __shape__.rolsuper
+          - not __shape__.rolcreaterole
+          - not __shape__.rolcreatedb
+          - not __shape__.rolreplication
+          - not __shape__.rolbypassrls
+          - not __shape__.rolinherit
+          - __shape__.rolconnlimit == keycloak_db_config_running.role.connection_limit | int
+          - __shape__.database_connect
+          - not __shape__.database_create
+          - not __shape__.database_temp
+          - not __shape__.public_usage
+          - not __shape__.public_create
+          - __shape__.schema_usage
+          - __shape__.schema_create
+          - __shape__.schema_owner == keycloak_db_config_running.administrator.username
+          - __shape__.database_public_grants == 0
+          - __shape__.public_public_grants == 0
 
 #endregion --- [ End: Prove The Role Holds Least Privilege ] ---------------------------------- #

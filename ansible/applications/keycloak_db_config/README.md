@@ -1,8 +1,9 @@
 # `keycloak_db_config` role
 
 Provisions the PostgreSQL role Keycloak runs as, and the schema it runs in, logged in as the
-database's administrator. Keycloak then holds a credential that can do nothing but run Keycloak:
-the administrator's never leaves this role. In one converge it:
+database's administrator. Keycloak then holds a credential with no administrative attribute and,
+in Keycloak's database, nothing beyond its own schema; the administrator's credential never leaves
+this role. In one converge it:
 
 1. installs the Python 3.12 PostgreSQL driver the modules need, and waits until fapolicyd has
    loaded it;
@@ -18,11 +19,16 @@ schema -- including the jdbc-ping table the nodes find each other by -- and noth
 
 ## Composition and prerequisites
 
-The playbook runs this role on exactly one node, before any node starts Keycloak, because that
-first start creates Keycloak's tables as this role. The controller reads the administrator's
-credential from the secret RDS manages; the node receives it only as parameters of the
-community.postgresql modules, whose argument specs mask it in every log and result, and never on
-disk. The modules run as the SSH user, not root: they only open a TLS connection to the database.
+The playbook runs this role on exactly one node, so the administrator's credential reaches one
+host, and before any node starts Keycloak, because that first start creates Keycloak's tables as
+this role. The controller reads the credential from the secret RDS manages; the node receives it
+only as parameters of the community.postgresql modules, whose argument specs mask it in every log
+and result. It never reaches the node's disk because the inventory pipelines every module, so
+parameters reach the interpreter on stdin rather than as a staged file.
+
+The modules run as the SSH user, not root: they only open a TLS connection to the database. RHEL's
+default fapolicyd rules deny such a process an untrusted shared library, so after installing the
+driver the role waits until fapolicyd has loaded its trust [INV-02].
 
 Requires `community.postgresql` >= 5.0.0, the first release tested on ansible-core 2.21.
 
@@ -38,10 +44,28 @@ must not be the administrator.
 
 | Object | Shape | Why |
 |---|---|---|
-| The role | `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`, a connection limit | It cannot administer anything, and cannot exhaust the server |
+| The role | `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`, a connection limit | It cannot administer anything, and cannot exhaust the server's connections |
 | The database | PUBLIC holds nothing; the role holds CONNECT | No other role connects by default |
 | Schema `public` | PUBLIC holds nothing | Nothing uses it |
 | The schema | Owned by the administrator; the role holds USAGE and CREATE | The role cannot drop it or grant on it |
+
+## Known limits
+
+- `postgresql_user` runs with `no_password_changes`. The verifier is salted afresh each run and RDS
+  hides `pg_authid`, so without it every run would rewrite the password and report a change. A role
+  that already exists therefore keeps its password and its connection limit; in the ephemeral
+  pipeline the database is new every run, and END reads both back.
+- PUBLIC keeps PostgreSQL's default CONNECT and TEMP on the `postgres` and `template1` databases,
+  so the role can open them and create temporary tables there (PostgreSQL's default database ACL,
+  measured on PostgreSQL 17; inferred for RDS). Revoking them is later work.
+- The role's password exists only in the controller file
+  `~/.ansible/keycloak/<sha256 of the master secret's ARN>.password`, which the first converge
+  writes. A converge from any other controller -- an operator's, during the workflow's hold --
+  generates a different one: END's login as the role then fails before Keycloak is touched, but a
+  run whose `--limit` leaves out the node this role runs on skips END and writes the new password
+  to the nodes it does reach. To converge a living stack from another controller, first write that
+  file with `KCRAW_DB_PASSWORD` from a node's root-only `/opt/keycloak/keycloak.env`; the value is
+  letters and digits, so it needs no unescaping.
 
 ## State
 
@@ -55,14 +79,6 @@ Keycloak from every node. It leaves PUBLIC's privileges revoked, because they ha
 as a whole, and leaves the driver installed: a shared system package this role cannot tell nothing
 else uses. A second `absent` run changes nothing.
 
-## Known limit
-
-`postgresql_user` runs with `no_password_changes`: on RDS the administrator cannot read
-`pg_authid`, so without it the module would send the password on every run and report a change it
-did not make. A role that already exists therefore keeps its password and its connection limit. In
-the ephemeral pipeline the database is new every run, so the two cannot diverge; a standing
-database would need its own rotation.
-
 ## Design invariants
 
 1. [INV-01] Keycloak 26.7.5 runs entirely inside a schema it does not own. Started with
@@ -70,9 +86,16 @@ database would need its own rotation.
    that schema, two nodes created all 346 relations there, owned by the role, formed one cluster,
    and created, changed and deleted a realm. `kc.sh build --help` does not list `db-schema`, so it
    is a run-time option. Measured on 2026-10-02 against PostgreSQL 17 with a non-superuser
-   administrator standing in for the RDS master; on RDS, END proves the resulting shape on every
+   administrator standing in for the RDS master; on RDS, END proves the role's privileges on every
    deploy. Consequence: the schema stays the administrator's, and no SET ROLE to the role is
    needed.
+2. [INV-02] fapolicyd's rpm plugin notifies the daemon of a new package (documented: RHEL 8's
+   fapolicyd guide, "The plugin notifies the fapolicyd daemon"), and a notified daemon reloads its
+   trust behind the notification: the keycloak role measured a deny 84 ms after
+   `fapolicyd-cli --update` (Rocky 8, fapolicyd 1.3.2, 2026-10-01). That the plugin's notification
+   reloads the same way is inferred. Consequence: after installing the driver, the role reads the
+   loaded database until it lists the driver's directory, and fails naming fapolicyd if it never
+   does.
 
 ## Verification
 

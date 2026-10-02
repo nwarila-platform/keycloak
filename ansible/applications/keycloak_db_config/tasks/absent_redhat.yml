@@ -40,7 +40,7 @@
 
 #region ------ [ Process: Remove The Role And Its Schema ] ------------------------------------ #
 
-# Logged in as the administrator, as present is; trust_input stays on for the same reason.
+# trust_input: every name put into SQL was checked as an identifier by validate.yml.
 - name: 'PROCESS | Remove The Role And Its Schema'
   block:
 
@@ -63,7 +63,7 @@
 
     # DROP ROLE refuses while the role holds a privilege, and a revoke naming a role that no
     # longer exists fails, so this runs only while the role does.
-    - name: "PROCESS | Revoke The Role's CONNECT On The Database"
+    - name: 'PROCESS | Revoke The Role''s CONNECT On The Database'
       when: (__keycloak_db_config_role__.query_result | first).roles | int > 0
 
       community.postgresql.postgresql_privs:
