@@ -6,9 +6,8 @@
 # once, at start. Tasks in present_redhat.yml write each of those, and none takes effect until
 # the service restarts, so each notifies this handler.
 #
-# A handler runs once however often it is notified: a converge that moves a setting AND a link
-# restarts once, and one that moves neither never restarts. present_redhat.yml flushes it before
-# the readiness wait, so the wait judges the restarted service.
+# A handler runs once however often it is notified. present_redhat.yml flushes it after the link
+# and again in an always:; its configure stage says what that second flush covers.
 #
 # ============================================================================================= #
 ---
@@ -18,7 +17,6 @@
   ansible.builtin.systemd_service:
     daemon_reexec: false
     daemon_reload: true
-    force: false
     masked: false
     name: "{{ keycloak_running.service }}"
     no_block: false
