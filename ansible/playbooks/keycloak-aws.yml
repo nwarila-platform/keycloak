@@ -3,16 +3,14 @@
 # --- [ Description ] ----------------------------------------------------------------------- #
 #
 # Brings the ephemeral EC2 instances from "the API says they exist" to one Keycloak cluster: two
-# CIS-hardened RHEL 8 nodes in two zones, sharing an RDS PostgreSQL database and served through an
-# internal application load balancer.
+# CIS-hardened RHEL 8 nodes in two zones, sharing an RDS PostgreSQL database and served through
+# an internal application load balancer.
 #
-# The inventory decides how each host is reached; this play's ordered credential sets decide who
-# logs on. A new image answers only as its image account, with the launch key.
+# The inventory decides how each host is reached; credential_resolver decides who logs on.
 #
-# The workflow passes what Terraform built -- the database's address and the ARN of the secret
-# RDS keeps its master credentials in, and the load balancer's name -- as extra-vars, as it does
-# the account and the region, so the play and the stack cannot disagree. The master credential
-# provisions the role Keycloak runs as, from one node, and goes nowhere else.
+# The workflow passes what Terraform built -- the database's endpoint, the ARN of the secret RDS
+# keeps its master credential in, the load balancer's name and its target group -- as extra-vars,
+# as it does the account and the region, so the play and the stack cannot disagree.
 #
 # Runs from the composed tree: the workflow overlays this repository onto the pinned framework
 # and uses its configuration, role search path, connection defaults, and explicit fact gathering.
@@ -31,70 +29,92 @@
     # Two nodes, because a cluster of one proves nothing about losing a node.
     - name: 'INVENTORY | Require The Two-Node Cluster'
       ansible.builtin.assert:
-        that: groups['keycloak_servers'] | default([]) | length == 2
         fail_msg: >-
           Refusing to configure: the 'keycloak_servers' inventory group holds
           {{ groups['keycloak_servers'] | default([]) | length }} host(s), not the two nodes
           terraform/aws.tfvars declares. The dynamic EC2 inventory found a different topology
           tagged for this run.
         quiet: true
+        that: groups['keycloak_servers'] | default([]) | length == 2
 
     # Account-derived values are passed EXPLICITLY on the invocation, never read from the
     # environment by a role, so the play and the deploy identity cannot disagree.
     - name: 'INVENTORY | Require The AWS Deployment Identity'
       ansible.builtin.assert:
-        that:
-          - aws_account_id is defined
-          - aws_account_id is match('^[0-9]{12}$')
-          - aws_region is defined
-          - aws_region is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
         fail_msg: >-
           aws_account_id and aws_region must be provided as extra-vars. The aws-deploy workflow
           passes them from its own environment (the same values the OIDC role ARN and region
           use); a local run must pass both explicitly.
         quiet: true
+        that:
+          - aws_account_id is defined
+          - aws_account_id is match('^[0-9]{12}$')
+          - aws_region is defined
+          - aws_region is match('^[a-z]{2}(-[a-z]+)+-[0-9]$')
 
     - name: 'INVENTORY | Require The Stack Endpoints'
       ansible.builtin.assert:
-        that:
-          - keycloak_database.address | default('') is match('^[A-Za-z0-9.-]+$')
-          - keycloak_database.port | default(0) | int > 0
-          - keycloak_database.master_user_secret_arn | default('') is match('^arn:aws:secretsmanager:')
-          - keycloak_load_balancer_dns | default('') is match('^[A-Za-z0-9.-]+$')
-          - keycloak_target_group_arn | default('') is match('^arn:aws:elasticloadbalancing:')
         fail_msg: >-
           keycloak_database (address, port, master_user_secret_arn), keycloak_load_balancer_dns
           and keycloak_target_group_arn must be provided as extra-vars. The aws-deploy workflow
           reads them from Terraform's outputs after apply; a local run reads the same outputs and
           passes them explicitly.
         quiet: true
+        that:
+          - keycloak_database.address | default('') is match('^[A-Za-z0-9.-]+$')
+          - keycloak_database.port | default(0) | int > 0
+          - >-
+            keycloak_database.master_user_secret_arn | default('')
+            is match('^arn:aws:secretsmanager:')
+          - keycloak_load_balancer_dns | default('') is match('^[A-Za-z0-9.-]+$')
+          - keycloak_target_group_arn | default('') is match('^arn:aws:elasticloadbalancing:')
 
 #endregion --- [ Play: Inventory Contract ] --------------------------------------------------- #
 
-#region ------ [ Play: Prepare The Hosts ] ---------------------------------------------------- #
+#region ------ [ Play: Configure The Hosts ] -------------------------------------------------- #
 
-- name: 'PLAY | Prepare The Hosts (ephemeral AWS)'
+- name: 'PLAY | Configure The Hosts (ephemeral AWS)'
   hosts: 'keycloak_servers'
   any_errors_fatal: true
-  vars:
-    launch_key_file: "{{ lookup('ansible.builtin.env', 'CI_PRIVATE_KEY') \
-      | default('~/.ssh/nwarila-ec2-key', true) | expanduser }}"
-    # The CIS RHEL 8 image answers only as its image account, authenticated by the account key
-    # pair it installed from instance metadata at first boot. Nothing here joins a directory, so
-    # there is no later identity to hand over to.
-    credential_sets:
-      - name: 'image-administrator'
-        connection: 'ssh'
-        user: 'ec2-user'
-        private_key_file: "{{ launch_key_file }}"
+  vars: &keycloak_stack
+    keycloak_http_port: 8080
+    keycloak_management_port: 9000
+    keycloak_service_name: 'keycloak'
+    keycloak_url: "http://{{ keycloak_load_balancer_dns }}"
+    keycloak_administrator:
+      username: 'admin'
+      password: >-
+        {{ lookup('secret', 's3://' ~ aws_account_id
+           ~ '-ansible/applications/keycloak/administrator-password.txt') | trim }}
+    keycloak_database_name: 'keycloak'
+    keycloak_database_schema: 'keycloak'
+    keycloak_database_role_name: 'keycloak'
+    # Below Keycloak's default pool of 100: a db.t4g.micro admits about eighty connections, which
+    # two nodes at 100 would exhaust (ee5985d).
+    keycloak_database_pool_max_size: 20
+    # One password per database, in a controller file named by the secret RDS mints for it. From
+    # another controller, first seed that file (0600, in a 0700 directory) with KCRAW_DB_PASSWORD
+    # from a node's /opt/keycloak/keycloak.env, or a --limit run hands its nodes a new password.
+    keycloak_database_password: >-
+      {{ lookup('ansible.builtin.password',
+                '~/.ansible/keycloak/'
+                ~ (keycloak_database.master_user_secret_arn | hash('sha256')) ~ '.password',
+                chars=['ascii_letters', 'digits'], length=40) }}
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
-    # The image account must reach uid 0 through non-interactive sudo; every later play escalates.
+    # The CIS RHEL 8 image answers only as ec2-user, with the launch key it installs from
+    # instance metadata at first boot (2026-10-02); plays that need root escalate through sudo.
     - role: 'credential_resolver'
       tags: ['always']
       vars:
-        credential_resolver_candidates: "{{ credential_sets }}"
+        credential_resolver_candidates:
+          - name: 'image-administrator'
+            connection: 'ssh'
+            user: 'ec2-user'
+            private_key_file: >-
+              {{ lookup('ansible.builtin.env', 'CI_PRIVATE_KEY')
+                 | default('~/.ssh/nwarila-ec2-key', true) | expanduser }}
         credential_resolver_require_elevated: true
         credential_resolver_wait_pause_seconds: 10
         credential_resolver_wait_rounds: 60
@@ -102,52 +122,150 @@
     - role: 'host_readiness'
 
     # RHEL 8 ships Python 3.6, below ansible-core's floor; the bootstrap installs the Python 3.12
-    # the inventory names for every later module, over raw, before any module runs.
+    # the inventory names for every later module, over raw, before any module runs (2026-10-02,
+    # run 37061257295).
     - role: 'os_bootstrap'
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: Prepare The Hosts ] ---------------------------------------------------- #
+  #region ------ [ Tasks ] -------------------------------------------------------------------- #
+  tasks:
+    # The host firewall is nftables, not firewalld (ee5985d); this ruleset is its whole filter.
+    # It runs before the Keycloak play, so both nodes' cluster ports open before either starts,
+    # and carries the products tag, so a products-only run reconciles it too.
+    - name: 'PROCESS | Make Nftables The Host Firewall'
+      become: true
+      tags: ['products']
+      block:
 
-#region ------ [ Play: Provision Keycloak's Database Role ] ----------------------------------- #
-# Before any node starts Keycloak, whose first start creates its tables as that role. Only this
-# play and the Remove play read the master credential, each on one node: the inventory orders
-# hosts by instance id, so [0] is the same node in every invocation -- the Keycloak play's first
-# batch -- and the second converge finds the driver already installed.
+        - name: 'PROCESS | Install Nftables'
+          ansible.builtin.dnf:
+            allow_downgrade: false
+            allowerasing: false
+            autoremove: false
+            bugfix: false
+            cacheonly: false
+            disable_gpg_check: false
+            disable_plugin: []
+            disablerepo: []
+            download_only: false
+            enable_plugin: []
+            enablerepo: []
+            exclude: []
+            install_weak_deps: true
+            installroot: '/'
+            lock_timeout: 30
+            name: 'nftables'
+            security: false
+            skip_broken: false
+            sslverify: true
+            state: 'present'
+            update_cache: false
+            update_only: false
+            use_backend: 'auto'
+            validate_certs: true
 
-- name: 'PLAY | Provision Keycloak''s Database Role (ephemeral AWS)'
+        # SSH is the resolver's port, or 22 where the winning set names none (2494eb3). The
+        # cluster uses 7800 for cache traffic and 57800 (7800 + 50000) for failure detection
+        # (ee5985d).
+        - name: 'PROCESS | Write The Host Nftables Ruleset'
+          register: '__keycloak_nftables_ruleset__'
+
+          ansible.builtin.copy:
+            backup: false
+            content: |
+              #!/usr/sbin/nft -f
+              # Managed by ansible/playbooks/keycloak-aws.yml; a local edit is overwritten.
+              flush ruleset
+
+              table inet filter {
+                  chain input {
+                      type filter hook input priority 0; policy drop;
+                      ct state established,related accept
+                      ct state invalid drop
+                      iif "lo" accept
+                      ip saddr 127.0.0.0/8 drop
+                      ip6 saddr ::1 drop
+                      meta l4proto { icmp, ipv6-icmp } accept
+                      tcp dport {{ ansible_port | default(22, true) }} ct state new limit rate 25/second burst 50 packets accept
+              {% if (state | default('present') | string | lower | trim) != 'absent' %}
+                      tcp dport { {{ keycloak_http_port }}, {{ keycloak_management_port }} } ct state new limit rate 25/second burst 50 packets accept
+                      tcp dport { 7800, 57800 } ct state new limit rate 25/second burst 50 packets accept
+              {% endif %}
+                  }
+                  chain forward {
+                      type filter hook forward priority 0; policy drop;
+                  }
+                  chain output {
+                      type filter hook output priority 0; policy accept;
+                  }
+              }
+            decrypt: true
+            dest: '/etc/sysconfig/nftables.conf'
+            follow: false
+            force: true
+            group: 'root'
+            mode: '0600'
+            owner: 'root'
+            remote_src: false
+            unsafe_writes: false
+            validate: '/usr/sbin/nft -c -f %s'
+
+        # Stopping firewalld removes its rules, so until nftables loads a moment later the host
+        # filters nothing, which cannot drop the session running this. Masked, so nothing starts
+        # it again behind this ruleset (ee5985d).
+        - name: 'PROCESS | Stop And Mask Firewalld'
+          ansible.builtin.systemd_service:
+            daemon_reexec: false
+            daemon_reload: false
+            masked: true
+            name: 'firewalld'
+            no_block: false
+            scope: 'system'
+            state: 'stopped'
+
+        # Unmasked as well: the CIS remediation for firewalld masks nftables, and enabling a
+        # masked unit fails after firewalld is stopped, leaving the host unfiltered (ee5985d).
+        - name: 'PROCESS | Enable And Start Nftables'
+          register: '__keycloak_nftables_service__'
+
+          ansible.builtin.systemd_service:
+            daemon_reexec: false
+            daemon_reload: false
+            enabled: true
+            masked: false
+            name: 'nftables'
+            no_block: false
+            scope: 'system'
+            state: 'started'
+
+        - name: 'PROCESS | Load A Changed Ruleset'
+          when:
+            - __keycloak_nftables_ruleset__ is changed
+            - __keycloak_nftables_service__ is not changed
+
+          ansible.builtin.systemd_service:
+            daemon_reexec: false
+            daemon_reload: false
+            name: 'nftables'
+            no_block: false
+            scope: 'system'
+            state: 'reloaded'
+
+  #endregion --- [ Tasks ] -------------------------------------------------------------------- #
+
+#endregion --- [ Play: Configure The Hosts ] -------------------------------------------------- #
+
+#region ------ [ Play: Provision The Keycloak Database Role ] --------------------------------- #
+# Before any node starts Keycloak, whose first start creates its tables as this role. Runs on
+# keycloak_servers[0], which the inventory sorts by instance id (amazon.aws 11.4.0, 2026-10-03),
+# so every invocation provisions from the node the Keycloak play starts first.
+
+- name: 'PLAY | Provision The Keycloak Database Role (ephemeral AWS)'
   hosts: 'keycloak_servers[0]'
   any_errors_fatal: true
-  become: false
   tags: ['products']
-  vars:
-    # Stated once, in the first play that uses any of them, for the host firewall, both roles and
-    # the proof. 7800 carries the cluster's cache traffic and 57800 its failure detection
-    # (7800 + 50000).
-    <<: &keycloak_service
-      keycloak_http_port: 8080
-      keycloak_management_port: 9000
-      keycloak_cluster_ports: [ 7800, 57800 ]
-      keycloak_service_name: 'keycloak'
-      keycloak_administrator: 'admin'
-      keycloak_database_name: 'keycloak'
-      keycloak_database_schema: 'keycloak'
-      keycloak_database_role_name: 'keycloak'
-      keycloak_database_pool_max_size: 20
-      # One password per database, kept on the controller: both converges template it afresh,
-      # and each must read the value the first one wrote. RDS mints the master secret per
-      # instance, so it names the file.
-      keycloak_database_password: >-
-        {{ lookup('ansible.builtin.password',
-                  '~/.ansible/keycloak/'
-                  ~ (keycloak_database.master_user_secret_arn | hash('sha256')) ~ '.password',
-                  chars=['ascii_letters', 'digits'], length=40) }}
-
-    # RDS keeps the master credentials in Secrets Manager and rotates them; they are read on the
-    # controller, and only by the plays that provision and remove the role.
-    keycloak_database_credentials: &keycloak_database_credentials >-
-      {{ lookup('amazon.aws.secretsmanager_secret', keycloak_database.master_user_secret_arn,
-                region=aws_region) | from_json }}
+  vars: *keycloak_stack
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
@@ -161,117 +279,37 @@
           port: "{{ keycloak_database.port }}"
           name: "{{ keycloak_database_name }}"
           schema: "{{ keycloak_database_schema }}"
-          administrator:
-            username: "{{ keycloak_database_credentials.username }}"
-            password: "{{ keycloak_database_credentials.password }}"
+          # RDS keeps the master credential in Secrets Manager as {username, password} and
+          # rotates it (ee5985d). Only this play and the Remove play read it, on the controller.
+          administrator: >-
+            {{ lookup('amazon.aws.secretsmanager_secret',
+                      keycloak_database.master_user_secret_arn, region=aws_region) | from_json }}
           role:
             name: "{{ keycloak_database_role_name }}"
             password: "{{ keycloak_database_password }}"
             # Every node's pool at its ceiling, one more for the role's own check, and one more
-            # because PostgreSQL enforces the limit only approximately.
+            # because PostgreSQL enforces the limit only approximately (3466fbf).
             connection_limit: >-
               {{ keycloak_database_pool_max_size * (groups['keycloak_servers'] | length) + 2 }}
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: Provision Keycloak's Database Role ] ----------------------------------- #
+#endregion --- [ Play: Provision The Keycloak Database Role ] --------------------------------- #
 
 #region ------ [ Play: Keycloak ] ------------------------------------------------------------- #
-# One node at a time: the first to start against the empty database creates its schema and the
-# first administrator, and the second joins a cluster that already serves. Keycloak supports
-# rolling through a patch release of the same major.minor that 'kc.sh update-compatibility'
-# accepts, which is what this play does. Any other version bump must stop every node before this
-# play runs, because the first node to start migrates the schema the others still run against.
-#
-# Tagged so a run can build the hosts alone (--skip-tags products) when what is under test is the
-# ground Keycloak stands on.
+# One node at a time: the first start against an empty database creates the schema and the first
+# administrator. Only a patch 'kc.sh update-compatibility' accepts may roll; any other bump must
+# first stop every node, as the first to start migrates the schema the rest run on (ee5985d).
 
 - name: 'PLAY | Keycloak (ephemeral AWS)'
   hosts: 'keycloak_servers'
   any_errors_fatal: true
   become: true
   serial: 1
+  # Tagged so a run can build the hosts alone (--skip-tags products) when what is under test is
+  # the ground Keycloak stands on.
   tags: ['products']
-  vars:
-    <<: *keycloak_service
-
-  #region ------ [ Pre-Tasks: The Host Firewall Is nftables ] -------------------------------- #
-  # The fleet decision nessus records: the host firewall is nftables itself, not firewalld. The
-  # security groups already decide which peers reach each port; this ruleset closes everything
-  # else on the host.
-  pre_tasks:
-    - name: 'PROCESS | Install nftables'
-      ansible.builtin.dnf:
-        name: 'nftables'
-        state: 'present'
-
-    # credential_resolver publishes a port the winning set leaves out as null, so SSH's own 22.
-    - name: 'PROCESS | Write The Host nftables Ruleset'
-      register: '__keycloak_nftables_ruleset__'
-      vars:
-        __keycloak_open__: "{{ (state | default('present') | string | lower | trim) != 'absent' }}"
-      ansible.builtin.copy:
-        content: |
-          #!/usr/sbin/nft -f
-          # Managed by ansible/playbooks/keycloak-aws.yml; a local edit is overwritten.
-          flush ruleset
-
-          table inet filter {
-              chain input {
-                  type filter hook input priority 0; policy drop;
-                  ct state established,related accept
-                  ct state invalid drop
-                  iif "lo" accept
-                  ip saddr 127.0.0.0/8 drop
-                  ip6 saddr ::1 drop
-                  meta l4proto { icmp, ipv6-icmp } accept
-                  tcp dport {{ ansible_port | default(22, true) }} ct state new limit rate 25/second burst 50 packets accept
-          {% if __keycloak_open__ | bool %}
-                  tcp dport { {{ keycloak_http_port }}, {{ keycloak_management_port }} } ct state new limit rate 25/second burst 50 packets accept
-                  tcp dport { {{ keycloak_cluster_ports | join(', ') }} } ct state new limit rate 25/second burst 50 packets accept
-          {% endif %}
-              }
-              chain forward {
-                  type filter hook forward priority 0; policy drop;
-              }
-              chain output {
-                  type filter hook output priority 0; policy accept;
-              }
-          }
-        dest: '/etc/sysconfig/nftables.conf'
-        group: 'root'
-        mode: '0600'
-        owner: 'root'
-        validate: '/usr/sbin/nft -c -f %s'
-
-    # Stopping firewalld removes its own rules, so until nftables loads a moment later the host
-    # filters nothing -- which cannot drop the session running this. Masked, so nothing starts it
-    # again behind this ruleset.
-    - name: 'PROCESS | Stop And Mask firewalld'
-      ansible.builtin.systemd_service:
-        masked: true
-        name: 'firewalld'
-        state: 'stopped'
-
-    # Unmasked as well: the CIS remediation for running firewalld masks nftables, and enabling a
-    # masked unit fails after firewalld is already stopped, leaving the host unfiltered.
-    - name: 'PROCESS | Enable And Start nftables'
-      register: '__keycloak_nftables_service__'
-      ansible.builtin.systemd_service:
-        enabled: true
-        masked: false
-        name: 'nftables'
-        state: 'started'
-
-    - name: 'PROCESS | Load A Changed Ruleset'
-      when:
-        - __keycloak_nftables_ruleset__ is changed
-        - __keycloak_nftables_service__ is not changed
-      ansible.builtin.systemd_service:
-        name: 'nftables'
-        state: 'reloaded'
-
-  #endregion --- [ Pre-Tasks: The Host Firewall Is nftables ] -------------------------------- #
+  vars: *keycloak_stack
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
@@ -279,18 +317,18 @@
       vars:
         keycloak:
 
-          # What is installed, stated where a reader can see it. The digest is the SHA-256 the
-          # vendor publishes for keycloak-26.7.5.tar.gz on its GitHub release; the application
-          # repository carries those bytes at the key the role composes from the version. A
-          # version bump is these two values and dependencies/aws/artifacts.yml.
+          # The SHA-256 the vendor publishes on this release's GitHub page; the application
+          # repository carries the object at the key the role composes from the version. A bump
+          # is these two values and dependencies/aws/artifacts.yml.
           installer:
             bucket: "{{ aws_account_id }}-apprepo"
             version: '26.7.5'
             sha256: '87d680d13cf4600d232ca0433a2553c57ebf03e56f7718fc0d03a1a8705497c8'
 
-          # The load balancer is internal and TLS-less: every client is inside the VPC, and
-          # Keycloak admits plain HTTP from private addresses. TLS arrives with a certificate.
-          hostname: "http://{{ keycloak_load_balancer_dns }}"
+          # Internal and TLS-less: every client is inside the VPC, and Keycloak's realm default
+          # (sslRequired=external) admits plain HTTP from private addresses (2026-10-02, run
+          # 37061257295).
+          hostname: "{{ keycloak_url }}"
           http_port: "{{ keycloak_http_port }}"
           management_port: "{{ keycloak_management_port }}"
           service: "{{ keycloak_service_name }}"
@@ -304,30 +342,22 @@
             password: "{{ keycloak_database_password }}"
             pool_max_size: "{{ keycloak_database_pool_max_size }}"
 
-          administrator:
-            username: "{{ keycloak_administrator }}"
-            password: >-
-              {{ lookup('secret', 's3://' ~ aws_account_id
-                 ~ '-ansible/applications/keycloak/administrator-password.txt') | trim }}
+          administrator: "{{ keycloak_administrator }}"
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
 #endregion --- [ Play: Keycloak ] ------------------------------------------------------------- #
 
-#region ------ [ Play: Remove Keycloak's Database Role ] -------------------------------------- #
-# state=absent only, and after the Keycloak play has stopped and removed Keycloak on every node:
-# it drops the schema with EVERY realm, user, client and session Keycloak stored, and then the
-# role. Present needs the role before Keycloak's first start; absent must stop Keycloak before
-# dropping what it runs in -- hence two plays around the Keycloak play rather than one.
+#region ------ [ Play: Remove The Keycloak Database Role ] ------------------------------------ #
+# state=absent only, after the Keycloak play has removed Keycloak from every node: it drops the
+# schema with EVERY realm, user, client and session, then the role. Present needs the role before
+# the first start and absent after the last stop, hence two plays around the Keycloak play.
 
-- name: 'PLAY | Remove Keycloak''s Database Role (ephemeral AWS)'
+- name: 'PLAY | Remove The Keycloak Database Role (ephemeral AWS)'
   hosts: 'keycloak_servers[0]'
   any_errors_fatal: true
-  become: false
   tags: ['products']
-  vars:
-    <<: *keycloak_service
-    keycloak_database_credentials: *keycloak_database_credentials
+  vars: *keycloak_stack
 
   #region ------ [ Roles ] -------------------------------------------------------------------- #
   roles:
@@ -338,22 +368,12 @@
 
   #endregion --- [ Roles ] -------------------------------------------------------------------- #
 
-#endregion --- [ Play: Remove Keycloak's Database Role ] -------------------------------------- #
+#endregion --- [ Play: Remove The Keycloak Database Role ] ------------------------------------ #
 
 #region ------ [ Play: Prove The Cluster Survives Losing A Node (opt-in) ] -------------------- #
-# What makes this deployment highly available, proved rather than assumed:
-#   1. the nodes see each other: each node's cluster view, in its current run, counts both;
-#   2. the load balancer serves from both zones: it reports both targets healthy, and a token is
-#      issued through it from each node;
-#   3. state moves between nodes: a realm changed on one node is read back changed on the other,
-#      which only the cluster's cache invalidation makes true;
-#   4. losing a node loses nothing: with the first node stopped, the load balancer answers ten
-#      requests in a row, and a session born on the stopped node still refreshes;
-#   5. a node rejoins: the first node starts again, both targets are healthy and both nodes count
-#      two once more.
-#
-# It writes a throwaway realm and stops a node, so it is tagged 'never': an ordinary converge, and
-# the second converge that must report no change, never run it. The workflow asks for it by tag.
+# Opt-in: it writes a throwaway realm and stops a node, so it is tagged 'never' and no converge
+# runs it; the workflow asks for it by tag after the second converge. Each region below proves
+# one claim of the high-availability design against the running cluster.
 
 - name: 'PLAY | Prove The Cluster Survives Losing A Node (opt-in)'
   hosts: 'keycloak_servers'
@@ -361,17 +381,12 @@
   become: true
   tags: ['never', 'ha_proof']
   vars:
-    <<: *keycloak_service
-    __alb__: "http://{{ keycloak_load_balancer_dns }}"
+    <<: *keycloak_stack
     __local__: "http://127.0.0.1:{{ keycloak_http_port }}"
-    __ready__: "http://127.0.0.1:{{ keycloak_management_port }}/health/ready"
     __first__: "{{ groups['keycloak_servers'][0] }}"
     __second__: "{{ groups['keycloak_servers'][1] }}"
     __realm__: 'ha-proof'
     __token_path__: '/realms/master/protocol/openid-connect/token'
-    __admin_password__: >-
-      {{ lookup('secret', 's3://' ~ aws_account_id
-         ~ '-ansible/applications/keycloak/administrator-password.txt') | trim }}
 
   tasks:
 
@@ -384,20 +399,33 @@
       register: '__proof_invocation__'
 
       ansible.builtin.command:
-        argv: [ 'systemctl', 'show', '--property', 'InvocationID', '--value', "{{ keycloak_service_name }}" ]
+        argv:
+          - 'systemctl'
+          - 'show'
+          - '--property'
+          - 'InvocationID'
+          - '--value'
+          - "{{ keycloak_service_name }}"
         expand_argument_vars: false
         stdin_add_newline: true
         strip_empty_ends: true
 
-    # rc-contract: journalctl(1) exits 1 when --grep matches nothing; the assert below names that
-    # case rather than a bare non-zero exit. ISPN000094 is a new view, ISPN000093 a merged one.
+    # rc-contract: journalctl(1) exits 1 when --grep matches nothing; the assert below names it.
+    # ISPN000094 is a new cluster view and ISPN000093 a merged one (ee5985d).
     - name: 'END | Read The Last Cluster View In That Run'
       changed_when: false
       failed_when: false
       register: '__proof_view__'
 
       ansible.builtin.command:
-        argv: [ 'journalctl', "_SYSTEMD_INVOCATION_ID={{ __proof_invocation__.stdout }}", '--output', 'cat', '--no-pager', '--grep', 'ISPN00009[34]' ]
+        argv:
+          - 'journalctl'
+          - "_SYSTEMD_INVOCATION_ID={{ __proof_invocation__.stdout }}"
+          - '--output'
+          - 'cat'
+          - '--no-pager'
+          - '--grep'
+          - 'ISPN00009[34]'
         expand_argument_vars: false
         stdin_add_newline: true
         strip_empty_ends: true
@@ -405,6 +433,7 @@
     - name: 'END | Require Each Node To Count Both Nodes'
       vars:
         __last__: "{{ __proof_view__.stdout_lines | last | default('') }}"
+
       ansible.builtin.assert:
         fail_msg: >-
           {{ inventory_hostname }} does not see the whole cluster. Its last cluster view in its
@@ -416,13 +445,13 @@
 
     #region ------ [ Proof: The Load Balancer Serves From Both Zones ] ------------------------ #
 
-    # Read on the controller with the runner's credentials: the guests hold none. Unmeasured: the
-    # bound covers two passing health checks ten seconds apart, with margin.
+    # Read on the controller with the runner's credentials: the guests hold none.
+    # measured: 2026-10-02 -- both targets were healthy at the first check (37061257295)
     - name: 'END | Wait Until The Load Balancer Reports Both Targets Healthy'
+      become: false
       changed_when: false
       delay: 10
       delegate_to: 'localhost'
-      become: false
       register: '__proof_targets__'
       retries: 30
       run_once: true
@@ -445,93 +474,73 @@
         stdin_add_newline: true
         strip_empty_ends: true
 
-    - name: 'END | Obtain A Token Through The Load Balancer From Each Node'
-      changed_when: false
-      no_log: true
-      register: '__proof_alb_token__'
-
-      ansible.builtin.uri:
-        body:
-          client_id: 'admin-cli'
-          grant_type: 'password'
-          password: "{{ __admin_password__ }}"
-          username: "{{ keycloak_administrator }}"
-        body_format: 'form-urlencoded'
-        follow_redirects: 'safe'
-        force: false
-        force_basic_auth: false
-        method: 'POST'
-        return_content: true
-        status_code: [ 200 ]
-        timeout: 30
-        unredirected_headers: []
-        url: "{{ __alb__ }}{{ __token_path__ }}"
-        use_gssapi: false
-        use_netrc: true
-        use_proxy: false
-        validate_certs: true
-
-    - name: 'END | Require A Token Through The Load Balancer'
-      ansible.builtin.assert:
-        fail_msg: "{{ inventory_hostname }} received no access token through {{ __alb__ }}."
-        quiet: true
-        that: (__proof_alb_token__.json | default({})).access_token | default('') | length > 0
-
     #endregion --- [ Proof: The Load Balancer Serves From Both Zones ] ------------------------ #
 
     #region ------ [ Proof: State Moves Between Nodes ] --------------------------------------- #
     # Each node is asked directly, on its own loopback, so the load balancer cannot route both
     # questions to the same node. The second node caches the realm when it first reads it; only a
     # cluster invalidation from the first node makes its second read see the change.
-
     - name: 'PROCESS | Prove A Change On One Node Is Seen On The Other'
-      run_once: true
       no_log: true
+      run_once: true
       block:
 
         - name: 'BEGIN | Obtain An Administrator Token On Each Node'
           changed_when: false
           delegate_to: "{{ item }}"
           loop: [ "{{ __first__ }}", "{{ __second__ }}" ]
+          loop_control: { label: "{{ item }}" }
           register: '__proof_admin__'
 
           ansible.builtin.uri:
             body:
               client_id: 'admin-cli'
               grant_type: 'password'
-              password: "{{ __admin_password__ }}"
-              username: "{{ keycloak_administrator }}"
+              password: "{{ keycloak_administrator.password }}"
+              username: "{{ keycloak_administrator.username }}"
             body_format: 'form-urlencoded'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers: {}
+            http_agent: 'ansible-httpget'
             method: 'POST'
+            remote_src: false
             return_content: true
             status_code: [ 200 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}{{ __token_path__ }}"
             use_gssapi: false
             use_netrc: true
             use_proxy: false
             validate_certs: true
 
+        # A run interrupted before its cleanup, as a manual one against a held stack can be,
+        # leaves the realm behind.
         - name: 'PROCESS | Remove A Proof Realm A Previous Run Left'
           changed_when: __proof_stale__.status == 204
           delegate_to: "{{ __first__ }}"
           register: '__proof_stale__'
 
           ansible.builtin.uri:
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body_format: 'raw'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'DELETE'
+            remote_src: false
             return_content: false
             status_code: [ 204, 404 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
             use_gssapi: false
             use_netrc: true
@@ -543,18 +552,25 @@
           delegate_to: "{{ __first__ }}"
 
           ansible.builtin.uri:
-            body: { realm: "{{ __realm__ }}", enabled: true, displayName: 'before' }
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body:
+              displayName: 'before'
+              enabled: true
+              realm: "{{ __realm__ }}"
             body_format: 'json'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'POST'
+            remote_src: false
             return_content: false
             status_code: [ 201 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms"
             use_gssapi: false
             use_netrc: true
@@ -567,16 +583,21 @@
           register: '__proof_before__'
 
           ansible.builtin.uri:
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            body_format: 'raw'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'GET'
+            remote_src: false
             return_content: true
             status_code: [ 200 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
             use_gssapi: false
             use_netrc: true
@@ -588,18 +609,23 @@
           delegate_to: "{{ __first__ }}"
 
           ansible.builtin.uri:
-            body: { displayName: 'after' }
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body:
+              displayName: 'after'
             body_format: 'json'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'PUT'
+            remote_src: false
             return_content: false
             status_code: [ 204 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
             use_gssapi: false
             use_netrc: true
@@ -612,16 +638,21 @@
           register: '__proof_after__'
 
           ansible.builtin.uri:
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            body_format: 'raw'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[1].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'GET'
+            remote_src: false
             return_content: true
             status_code: [ 200 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
             use_gssapi: false
             use_netrc: true
@@ -639,21 +670,32 @@
               - __proof_before__.json.displayName == 'before'
               - __proof_after__.json.displayName == 'after'
 
+      always:
+
         - name: 'PROCESS | Remove The Proof Realm'
-          changed_when: true
+          changed_when: __proof_removed__.status == 204
           delegate_to: "{{ __first__ }}"
+          register: '__proof_removed__'
+          when:
+            - __proof_admin__ is defined
+            - __proof_admin__ is succeeded
 
           ansible.builtin.uri:
-            headers:
-              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            body_format: 'raw'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ __proof_admin__.results[0].json.access_token }}"
+            http_agent: 'ansible-httpget'
             method: 'DELETE'
+            remote_src: false
             return_content: false
-            status_code: [ 204 ]
-            timeout: 60
+            status_code: [ 204, 404 ]
+            timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}/admin/realms/{{ __realm__ }}"
             use_gssapi: false
             use_netrc: true
@@ -680,17 +722,22 @@
             body:
               client_id: 'admin-cli'
               grant_type: 'password'
-              password: "{{ __admin_password__ }}"
-              username: "{{ keycloak_administrator }}"
+              password: "{{ keycloak_administrator.password }}"
+              username: "{{ keycloak_administrator.username }}"
             body_format: 'form-urlencoded'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers: {}
+            http_agent: 'ansible-httpget'
             method: 'POST'
+            remote_src: false
             return_content: true
             status_code: [ 200 ]
             timeout: 30
             unredirected_headers: []
+            unsafe_writes: false
             url: "{{ __local__ }}{{ __token_path__ }}"
             use_gssapi: false
             use_netrc: true
@@ -703,17 +750,14 @@
           ansible.builtin.systemd_service:
             daemon_reexec: false
             daemon_reload: false
-            force: false
-            masked: false
             name: "{{ keycloak_service_name }}"
             no_block: false
             scope: 'system'
             state: 'stopped'
 
-        # Ten answers in a row from the public discovery document, which needs no credential: a
-        # request routed to the stopped node fails the attempt, so a pass means the load balancer
-        # has taken it out of service. Unmeasured: the bound covers two failed health checks ten
-        # seconds apart, with margin.
+        # Ten answers in a row from the public discovery document: one routed to the stopped node
+        # fails the attempt, so a pass means the load balancer took it out of service.
+        # measured: 2026-10-02 -- the third attempt passed, 22 s after the stop (37061257295)
         - name: 'END | Require Ten Answers In A Row Through The Load Balancer'
           changed_when: false
           delay: 10
@@ -731,7 +775,7 @@
                   curl --fail --silent --show-error --max-time 5 --output /dev/null "$1" || exit 1;
                 done
               - 'failover-probe'
-              - "{{ __alb__ }}/realms/master/.well-known/openid-configuration"
+              - "{{ keycloak_url }}/realms/master/.well-known/openid-configuration"
             expand_argument_vars: false
             stdin_add_newline: true
             strip_empty_ends: true
@@ -747,15 +791,20 @@
               grant_type: 'refresh_token'
               refresh_token: "{{ __proof_session__.json.refresh_token }}"
             body_format: 'form-urlencoded'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers: {}
+            http_agent: 'ansible-httpget'
             method: 'POST'
+            remote_src: false
             return_content: true
             status_code: [ 200 ]
             timeout: 30
             unredirected_headers: []
-            url: "{{ __alb__ }}{{ __token_path__ }}"
+            unsafe_writes: false
+            url: "{{ keycloak_url }}{{ __token_path__ }}"
             use_gssapi: false
             use_netrc: true
             use_proxy: false
@@ -769,33 +818,36 @@
           ansible.builtin.systemd_service:
             daemon_reexec: false
             daemon_reload: false
-            force: false
-            masked: false
             name: "{{ keycloak_service_name }}"
             no_block: false
             scope: 'system'
             state: 'started'
 
-        - name: 'END | Wait Until The First Node Reports Ready Again'
+        # measured: 2026-10-02 -- ready again after 3 retries, about 20 s (37061257295)
+        - name: 'PROCESS | Wait Until The First Node Reports Ready Again'
           changed_when: false
           delay: 5
           delegate_to: "{{ __first__ }}"
           register: '__proof_rejoined__'
           retries: 60
-          until:
-            - __proof_rejoined__.status | default(0) == 200
-            - (__proof_rejoined__.json | default({})).status | default('') == 'UP'
+          until: __proof_rejoined__.status | default(0) == 200
 
           ansible.builtin.uri:
+            body_format: 'raw'
+            decompress: true
             follow_redirects: 'safe'
             force: false
             force_basic_auth: false
+            headers: {}
+            http_agent: 'ansible-httpget'
             method: 'GET'
-            return_content: true
+            remote_src: false
+            return_content: false
             status_code: [ 200 ]
             timeout: 10
             unredirected_headers: []
-            url: "{{ __ready__ }}"
+            unsafe_writes: false
+            url: "http://127.0.0.1:{{ keycloak_management_port }}/health/ready"
             use_gssapi: false
             use_netrc: true
             use_proxy: false
@@ -805,11 +857,12 @@
 
     #region ------ [ Proof: A Node Rejoins ] -------------------------------------------------- #
 
+    # measured: 2026-10-02 -- both targets healthy again after 1 retry, about 12 s (37061257295)
     - name: 'END | Wait Until The Load Balancer Reports Both Targets Healthy Again'
+      become: false
       changed_when: false
       delay: 10
       delegate_to: 'localhost'
-      become: false
       register: '__proof_targets_again__'
       retries: 30
       run_once: true
@@ -837,18 +890,32 @@
       register: '__proof_rejoin_invocation__'
 
       ansible.builtin.command:
-        argv: [ 'systemctl', 'show', '--property', 'InvocationID', '--value', "{{ keycloak_service_name }}" ]
+        argv:
+          - 'systemctl'
+          - 'show'
+          - '--property'
+          - 'InvocationID'
+          - '--value'
+          - "{{ keycloak_service_name }}"
         expand_argument_vars: false
         stdin_add_newline: true
         strip_empty_ends: true
 
+    # rc-contract: journalctl(1) exits 1 when --grep matches nothing; the assert below names it.
     - name: 'END | Read The Last Cluster View In That Run After The Rejoin'
       changed_when: false
       failed_when: false
       register: '__proof_rejoin_view__'
 
       ansible.builtin.command:
-        argv: [ 'journalctl', "_SYSTEMD_INVOCATION_ID={{ __proof_rejoin_invocation__.stdout }}", '--output', 'cat', '--no-pager', '--grep', 'ISPN00009[34]' ]
+        argv:
+          - 'journalctl'
+          - "_SYSTEMD_INVOCATION_ID={{ __proof_rejoin_invocation__.stdout }}"
+          - '--output'
+          - 'cat'
+          - '--no-pager'
+          - '--grep'
+          - 'ISPN00009[34]'
         expand_argument_vars: false
         stdin_add_newline: true
         strip_empty_ends: true
@@ -856,6 +923,7 @@
     - name: 'END | Require Both Nodes Counted Again'
       vars:
         __last__: "{{ __proof_rejoin_view__.stdout_lines | last | default('') }}"
+
       ansible.builtin.assert:
         fail_msg: >-
           {{ inventory_hostname }} does not see the rejoined cluster. Its last cluster view in
