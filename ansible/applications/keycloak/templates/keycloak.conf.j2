@@ -3,7 +3,7 @@
 # database password is not here. It reaches Keycloak through KCRAW_DB_PASSWORD in the service's
 # environment file, because a value in this file is subject to ${...} expansion.
 # sslmode=require: always TLS, never a silent plaintext fallback. It does not authenticate the
-# server; verify-full needs the RDS CA bundle delivered as a declared artifact.
+# server; verify-full needs the server's CA bundle delivered as a declared artifact.
 db-url=jdbc:postgresql://{{ keycloak_running.database.host }}:{{ keycloak_running.database.port }}/{{ keycloak_running.database.name }}?sslmode=require
 db-schema={{ keycloak_running.database.schema }}
 db-username={{ keycloak_running.database.username }}

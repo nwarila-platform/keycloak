@@ -18,7 +18,7 @@
   block:
 
     # rc-contract: systemctl(1) is-active exits 0 only for an active unit, printing its state.
-    - name: 'BEGIN | Read Whether fapolicyd Is Running'
+    - name: 'BEGIN | Read Whether Fapolicyd Is Running'
       changed_when: false
       check_mode: false
       failed_when: false
@@ -42,7 +42,7 @@
         get_selinux_context: false
         path: "/etc/systemd/system/{{ keycloak_running.service }}.service"
 
-    - name: 'BEGIN | Read Whether The fapolicyd Trust File Exists'
+    - name: 'BEGIN | Read Whether The Fapolicyd Trust File Exists'
       register: '__keycloak_trust_file__'
 
       ansible.builtin.stat:
@@ -69,8 +69,6 @@
         daemon_reexec: false
         daemon_reload: false
         enabled: false
-        force: false
-        masked: false
         name: "{{ keycloak_running.service }}"
         no_block: false
         scope: 'system'
@@ -93,7 +91,6 @@
       ansible.builtin.systemd_service:
         daemon_reexec: false
         daemon_reload: true
-        force: false
         no_block: false
         scope: 'system'
 
@@ -108,7 +105,7 @@
         state: 'absent'
         unsafe_writes: false
 
-    - name: 'PROCESS | Withdraw The fapolicyd Trust'
+    - name: 'PROCESS | Withdraw The Fapolicyd Trust'
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
         follow: true
@@ -119,7 +116,7 @@
         state: 'absent'
         unsafe_writes: false
 
-    - name: 'PROCESS | Reload The fapolicyd Trust Database'
+    - name: 'PROCESS | Reload The Fapolicyd Trust Database'
       changed_when: true
       when:
         - (__keycloak_fapolicyd__.stdout | default('') | trim) == 'active'

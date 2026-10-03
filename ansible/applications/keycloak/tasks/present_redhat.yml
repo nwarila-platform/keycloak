@@ -3,13 +3,8 @@
 # --- [ Description ] ------------------------------------------------------------------------- #
 #
 # Installs Keycloak at the pinned version on a CIS-hardened RHEL 8 host, builds it, and runs it
-# as a service against the shared database, where it joins every other node in one cluster.
-#
-# BEGIN reads the host. PROCESS converges the runtime, the account, the unpacked tree, its
-# fapolicyd trust and the build, then the configuration, the environment and the unit, each
-# writing only on difference, and starts the service. END reads the version back from Keycloak
-# itself and the service's state and readiness from the host, and is ungated, so a converged
-# host proves what a fresh one does.
+# as a service against the shared database, where it joins every other node in one cluster. END
+# is ungated, so a converged host proves what a fresh one does.
 #
 # ============================================================================================= #
 ---
@@ -22,7 +17,7 @@
   block:
 
     # rc-contract: systemctl(1) is-active exits 0 only for an active unit, printing its state.
-    - name: 'BEGIN | Read Whether fapolicyd Is Running'
+    - name: 'BEGIN | Read Whether Fapolicyd Is Running'
       changed_when: false
       check_mode: false
       failed_when: false
@@ -36,7 +31,7 @@
 
     # rc-contract: grep(1) exits 0 when a line matches, 1 when none does, 2 when it cannot read
     # the file -- as on a host without fapolicyd, or before this role ever trusted anything.
-    - name: 'BEGIN | Read Whether fapolicyd Trusts This Version'
+    - name: 'BEGIN | Read Whether Fapolicyd Trusts This Version'
       changed_when: false
       check_mode: false
       failed_when: false
@@ -76,7 +71,7 @@
         checksum_algorithm: 'sha1'
         follow: false
         get_attributes: false
-        get_checksum: true
+        get_checksum: false
         get_mime: false
         get_selinux_context: false
         path: "{{ __home__ }}/.unpacked"
@@ -95,28 +90,17 @@
 
 #endregion --- [ Begin: Read The Host ] ------------------------------------------------------- #
 
-#region ------ [ Process: Install And Build Keycloak ] ---------------------------------------- #
+#region ------ [ Process: Install, Build And Start Keycloak ] --------------------------------- #
 
-- name: 'PROCESS | Install And Build Keycloak At The Pinned Version'
+- name: 'PROCESS | Install, Build And Start Keycloak'
   vars:
     __home__: "{{ keycloak_running.install_root }}/{{ keycloak_running.installer.version }}"
     __object__: >-
       {{ keycloak_running.installer.key
          | replace('<version>', keycloak_running.installer.version) }}
     __archive__: "{{ __object__ | basename }}"
-    # What the tree was built from and with; a difference from the record rebuilds it.
     __record__: >-
       {{ ([keycloak_running.installer.version] + keycloak_running.build_options) | join(' ') }}
-    __fapolicyd_active__: >-
-      {{ (__keycloak_fapolicyd__.stdout | default('') | trim) == 'active' }}
-    __java_install_required__: >-
-      {{ keycloak_running.java.package not in (ansible_facts.packages | default({})) }}
-    __trust_required__: "{{ (__keycloak_trusted__.rc | default(2)) != 0 }}"
-    __unpack_required__: >-
-      {{ (__keycloak_unpacked__.stat.checksum | default(''))
-         != (keycloak_running.installer.sha256 | hash('sha1')) }}
-    __build_required__: >-
-      {{ (__keycloak_built__.stat.checksum | default('')) != (__record__ | hash('sha1')) }}
   block:
 
     #region ------ [ Process: Install The Java Runtime ] -------------------------------------- #
@@ -185,7 +169,6 @@
 
     #region ------ [ Process: Create The Install Root ] --------------------------------------- #
 
-    # Readable by the account alone, which shuts every other account out of the whole tree.
     - name: 'PROCESS | Create The Install Root'
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
@@ -218,11 +201,9 @@
 
     #region ------ [ Process: Unpack The Pinned Distribution ] -------------------------------- #
 
-    # The controller fetches the object with its own credentials; the role hands the guest none.
-    # The digest is checked on the controller before a byte is shipped, and again on the guest
-    # copy, because that is the one tar reads.
+    # Verified on the guest, because that is the copy tar reads.
     - name: 'PROCESS | Unpack The Pinned Distribution'
-      when: __unpack_required__ | bool
+      when: not (__keycloak_unpacked__.stat.exists | default(false))
       block:
 
         - name: 'PROCESS | Create The Controller Staging Directory'
@@ -271,34 +252,6 @@
             validate_bucket_name: true
             validate_certs: true
 
-        - name: 'PROCESS | Read The Controller Copy Digest'
-          become: false
-          delegate_to: 'localhost'
-          register: '__keycloak_controller_copy__'
-          vars:
-            ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-          ansible.builtin.stat:
-            checksum_algorithm: 'sha256'
-            follow: false
-            get_attributes: false
-            get_checksum: true
-            get_mime: false
-            get_selinux_context: false
-            path: "{{ __keycloak_stage__.path }}/{{ __archive__ }}"
-
-        - name: 'PROCESS | Require The Controller Copy To Match Its Pin'
-          ansible.builtin.assert:
-            fail_msg: >-
-              The stored distribution has sha256
-              {{ __keycloak_controller_copy__.stat.checksum | default('(missing)') }}, but the
-              playbook pins {{ keycloak_running.installer.sha256 }}. The object changed under an
-              unchanged pin; refusing to ship it.
-            quiet: true
-            that:
-              - __keycloak_controller_copy__.stat.exists
-              - __keycloak_controller_copy__.stat.checksum == keycloak_running.installer.sha256
-
         # Into the loader's temporary directory: root-owned, 0700, removed when the role ends.
         - name: 'PROCESS | Copy The Distribution To The Guest'
           changed_when: false
@@ -339,9 +292,7 @@
               - __keycloak_guest_copy__.stat.exists
               - __keycloak_guest_copy__.stat.checksum == keycloak_running.installer.sha256
 
-        # The archive records its entries under the vendor's build account [INV-05], so ownership
-        # is set rather than kept; the top directory is stripped so the tree is named by version.
-        # include is left unstated: the module refuses it beside exclude, even when both are empty.
+        # Ownership is set, not kept: the archive records the vendor's build account [INV-05].
         - name: 'PROCESS | Unpack The Verified Copy'
           ansible.builtin.unarchive:
             decrypt: true
@@ -404,7 +355,6 @@
         state: 'directory'
         unsafe_writes: false
 
-    # The JVM's own temporary directory, because /tmp and /var/tmp are noexec on a CIS host.
     - name: 'PROCESS | Create The JVM Temporary Directory'
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
@@ -419,14 +369,10 @@
         state: 'directory'
         unsafe_writes: false
 
-    # The archive lists files under providers/ and themes/ but not the directories, so tar creates
-    # them with the extracting process's umask: 077 for root on a CIS host, which left them closed
-    # to the account and failed 'kc.sh build' on providers/ [INV-07].
+    # tar creates these with the extracting umask, 077 for root on a CIS host [INV-07].
     - name: 'PROCESS | Open The Directories The Archive Leaves Implicit'
       loop: [ 'providers', 'themes' ]
-      loop_control:
-        label: "{{ __directory__ }}"
-        loop_var: '__directory__'
+      loop_control: { label: "{{ item }}" }
 
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
@@ -436,7 +382,7 @@
         mode: '0755'
         modification_time_format: '%Y%m%d%H%M.%S'
         owner: 'root'
-        path: "{{ __home__ }}/{{ __directory__ }}"
+        path: "{{ __home__ }}/{{ item }}"
         recurse: false
         state: 'directory'
         unsafe_writes: false
@@ -457,72 +403,65 @@
 
     #endregion --- [ Process: Grant The Account What Keycloak Writes ] ------------------------ #
 
-    #region ------ [ Process: Trust The Libraries In fapolicyd ] ------------------------------ #
+    #region ------ [ Process: Trust The Libraries In Fapolicyd ] ------------------------------ #
 
     # Some of the jars are a type fapolicyd lets a non-root process open only when trusted
-    # [INV-01]. Trusted once, by path: a rebuild rewrites the same files, none of them of such a
-    # type [INV-02].
-    - name: 'PROCESS | Trust The Libraries Of This Version In fapolicyd'
-      changed_when: true
+    # [INV-01]. Trusted once, by path: a rebuild rewrites none of them [INV-02].
+    - name: 'PROCESS | Trust The Libraries Of This Version In Fapolicyd'
       when:
-        - __fapolicyd_active__ | bool
-        - __trust_required__ | bool
+        - (__keycloak_fapolicyd__.stdout | default('') | trim) == 'active'
+        - (__keycloak_trusted__.rc | default(2)) != 0
+      block:
 
-      ansible.builtin.command:
-        argv:
-          - 'fapolicyd-cli'
-          - '--file'
-          - 'add'
-          - "{{ __home__ }}/lib/"
-          - '--trust-file'
-          - "{{ keycloak_running.fapolicyd_trust_file }}"
-        expand_argument_vars: false
-        stdin_add_newline: true
-        strip_empty_ends: true
+        - name: 'PROCESS | Add The Libraries To The Trust File'
+          changed_when: true
 
-    # Also how fapolicyd learns a Java runtime installed above, before anything runs it.
-    - name: 'PROCESS | Reload The fapolicyd Trust Database'
-      changed_when: true
-      when:
-        - __fapolicyd_active__ | bool
-        - (__java_install_required__ | bool) or (__trust_required__ | bool)
+          ansible.builtin.command:
+            argv:
+              - 'fapolicyd-cli'
+              - '--file'
+              - 'add'
+              - "{{ __home__ }}/lib/"
+              - '--trust-file'
+              - "{{ keycloak_running.fapolicyd_trust_file }}"
+            expand_argument_vars: false
+            stdin_add_newline: true
+            strip_empty_ends: true
 
-      ansible.builtin.command:
-        argv: [ 'fapolicyd-cli', '--update' ]
-        expand_argument_vars: false
-        stdin_add_newline: true
-        strip_empty_ends: true
+        - name: 'PROCESS | Reload The Fapolicyd Trust Database'
+          changed_when: true
 
-    # --update only notifies the daemon, which reloads behind it, so a build started at once can
-    # still be judged by the old database (measured in a Rocky 8 fapolicyd 1.3.2 lab: denied 84 ms
-    # after --update). The loaded database is read until it carries this version's libraries; a
-    # reload that never lands fails here, naming fapolicyd, not later as a Java class error.
-    - name: 'PROCESS | Wait Until fapolicyd Has Loaded The Trust'
-      changed_when: false
-      delay: 2
-      register: '__keycloak_trust_loaded__'
-      retries: 30
-      until: __keycloak_trust_loaded__.rc == 0
-      when:
-        - __fapolicyd_active__ | bool
-        - __trust_required__ | bool
+          ansible.builtin.command:
+            argv: [ 'fapolicyd-cli', '--update' ]
+            expand_argument_vars: false
+            stdin_add_newline: true
+            strip_empty_ends: true
 
-      ansible.builtin.command:
-        argv:
-          - 'bash'
-          - '-c'
-          - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
-          - 'trust-probe'
-          - "{{ __home__ }}/lib/"
-        expand_argument_vars: false
-        stdin_add_newline: true
-        strip_empty_ends: true
+        # measured: 2026-10-01 -- --update returns before fapolicyd reloads its database [INV-08]
+        # rc-contract: grep(1) exits 0 when a line matches and 1 when none does.
+        - name: 'PROCESS | Wait Until Fapolicyd Has Loaded The Trust'
+          changed_when: false
+          delay: 2
+          register: '__keycloak_trust_loaded__'
+          retries: 30
+          until: __keycloak_trust_loaded__.rc == 0
 
-    #endregion --- [ Process: Trust The Libraries In fapolicyd ] ------------------------------ #
+          ansible.builtin.command:
+            argv:
+              - 'bash'
+              - '-c'
+              - 'fapolicyd-cli --dump-db | grep -q -F -- "$1"'
+              - 'trust-probe'
+              - "{{ __home__ }}/lib/"
+            expand_argument_vars: false
+            stdin_add_newline: true
+            strip_empty_ends: true
+
+    #endregion --- [ Process: Trust The Libraries In Fapolicyd ] ------------------------------ #
 
     #region ------ [ Process: Build Keycloak ] ------------------------------------------------ #
 
-    # As the account that owns the output, on the host's own JVM, FIPS mode and all [INV-04].
+    # On the host's own JVM, FIPS mode and all [INV-04].
     - name: 'PROCESS | Build Keycloak With The Declared Options'
       become: true
       become_user: "{{ keycloak_running.account }}"
@@ -530,7 +469,7 @@
       environment:
         JAVA_HOME: "{{ keycloak_running.java.home }}"
         JAVA_OPTS_APPEND: "-Djava.io.tmpdir={{ __home__ }}/data/tmp"
-      when: __build_required__ | bool
+      when: (__keycloak_built__.stat.checksum | default('')) != (__record__ | hash('sha1'))
 
       ansible.builtin.command:
         argv: "{{ [__home__ ~ '/bin/kc.sh', 'build'] + keycloak_running.build_options }}"
@@ -555,29 +494,12 @@
         remote_src: false
         unsafe_writes: false
 
-    # The service starts from this link, so moving it is a restart.
-    - name: 'PROCESS | Point The current Link At This Version'
-      notify: 'keycloak-restart-required'
-
-      ansible.builtin.file:
-        access_time_format: '%Y%m%d%H%M.%S'
-        follow: false
-        force: false
-        group: 'root'
-        modification_time_format: '%Y%m%d%H%M.%S'
-        owner: 'root'
-        path: "{{ keycloak_running.install_root }}/current"
-        recurse: false
-        src: "{{ keycloak_running.installer.version }}"
-        state: 'link'
-        unsafe_writes: false
-
     #endregion --- [ Process: Build Keycloak ] ------------------------------------------------ #
 
     #region ------ [ Process: Label The Tree For SELinux ] ------------------------------------ #
 
-    # Unpacked and written in place, the tree normally carries /opt's policy label already; -v
-    # prints only what restorecon changes, so a converged host reports nothing.
+    # A fresh tree is relabelled [INV-09]; -v prints only what restorecon changes, so a converged
+    # host reports nothing.
     - name: 'PROCESS | Apply The SELinux Labels Under The Install Root'
       changed_when: __keycloak_relabel__.stdout | length > 0
       register: '__keycloak_relabel__'
@@ -591,15 +513,131 @@
 
     #endregion --- [ Process: Label The Tree For SELinux ] ------------------------------------ #
 
+    #region ------ [ Process: Configure Keycloak ] -------------------------------------------- #
+
+    # Each write notifies the restart, and the always: flush runs it after a failed task too, so
+    # a change written before the failure is not left pending. An unreachable or interrupted run
+    # runs no handler; on a fresh host the restart fails until the next converge completes it.
+    - name: 'PROCESS | Configure Keycloak'
+      block:
+
+        # Holds no secret, so the account may read it.
+        - name: 'PROCESS | Write The Keycloak Configuration'
+          notify: 'keycloak-restart-required'
+
+          ansible.builtin.template:
+            backup: false
+            dest: "{{ __home__ }}/conf/keycloak.conf"
+            follow: false
+            force: true
+            group: "{{ keycloak_running.account }}"
+            lstrip_blocks: false
+            mode: '0640'
+            newline_sequence: '\n'
+            output_encoding: 'utf-8'
+            owner: 'root'
+            src: 'keycloak.conf.j2'
+            trim_blocks: true
+            unsafe_writes: false
+
+        # The two passwords. Root-only: systemd reads it before it drops to the account.
+        - name: 'PROCESS | Write The Service Environment'
+          no_log: true
+          notify: 'keycloak-restart-required'
+
+          ansible.builtin.template:
+            backup: false
+            dest: "{{ keycloak_running.install_root }}/keycloak.env"
+            follow: false
+            force: true
+            group: 'root'
+            lstrip_blocks: false
+            mode: '0600'
+            newline_sequence: '\n'
+            output_encoding: 'utf-8'
+            owner: 'root'
+            src: 'keycloak.env.j2'
+            trim_blocks: true
+            unsafe_writes: false
+
+        - name: 'PROCESS | Write The Service Unit'
+          notify: 'keycloak-restart-required'
+
+          ansible.builtin.template:
+            backup: false
+            dest: "/etc/systemd/system/{{ keycloak_running.service }}.service"
+            follow: false
+            force: true
+            group: 'root'
+            lstrip_blocks: false
+            mode: '0644'
+            newline_sequence: '\n'
+            output_encoding: 'utf-8'
+            owner: 'root'
+            src: 'keycloak.service.j2'
+            trim_blocks: true
+            unsafe_writes: false
+
+        # The service starts from this link, so moving it is a restart.
+        - name: 'PROCESS | Point The Current Link At This Version'
+          notify: 'keycloak-restart-required'
+
+          ansible.builtin.file:
+            access_time_format: '%Y%m%d%H%M.%S'
+            follow: false
+            force: false
+            group: 'root'
+            modification_time_format: '%Y%m%d%H%M.%S'
+            owner: 'root'
+            path: "{{ keycloak_running.install_root }}/current"
+            recurse: false
+            src: "{{ keycloak_running.installer.version }}"
+            state: 'link'
+            unsafe_writes: false
+
+        # The restart handler reloads systemd and starts a stopped service, so on a first
+        # converge it is the one start; on a converged host nothing was notified.
+        - name: 'PROCESS | Apply Any Pending Restart'
+          ansible.builtin.meta: 'flush_handlers'
+
+      #region ------ [ Always: Apply Any Pending Restart ] ------------------------------------ #
+
+      always:
+
+        - name: 'PROCESS | Apply Any Pending Restart Even After A Failure'
+          ansible.builtin.meta: 'flush_handlers'
+
+      #endregion --- [ Always: Apply Any Pending Restart ] ------------------------------------ #
+
+    #endregion --- [ Process: Configure Keycloak ] -------------------------------------------- #
+
+    #region ------ [ Process: Start Keycloak ] ------------------------------------------------ #
+
+    - name: 'PROCESS | Enable And Start Keycloak'
+      ansible.builtin.systemd_service:
+        daemon_reexec: false
+        daemon_reload: false
+        enabled: true
+        masked: false
+        name: "{{ keycloak_running.service }}"
+        no_block: false
+        scope: 'system'
+        state: 'started'
+
+    #endregion --- [ Process: Start Keycloak ] ------------------------------------------------ #
+
+  #region ------ [ Always: Remove The Controller Staging Directory ] -------------------------- #
+
   always:
 
     - name: 'PROCESS | Remove The Controller Staging Directory'
       become: false
       changed_when: false
+      check_mode: false
       delegate_to: 'localhost'
-      when: __keycloak_stage__.path is defined
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: __keycloak_stage__.path is defined
 
       ansible.builtin.file:
         access_time_format: '%Y%m%d%H%M.%S'
@@ -611,118 +649,11 @@
         state: 'absent'
         unsafe_writes: false
 
-#endregion --- [ Process: Install And Build Keycloak ] ---------------------------------------- #
+  #endregion --- [ Always: Remove The Controller Staging Directory ] -------------------------- #
 
-#region ------ [ Process: Configure And Start Keycloak ] -------------------------------------- #
+#endregion --- [ Process: Install, Build And Start Keycloak ] --------------------------------- #
 
-- name: 'PROCESS | Configure And Start Keycloak'
-  vars:
-    __home__: "{{ keycloak_running.install_root }}/{{ keycloak_running.installer.version }}"
-  block:
-
-    # Group-readable so the account can read it; it holds no secret.
-    - name: 'PROCESS | Write The Keycloak Configuration'
-      notify: 'keycloak-restart-required'
-
-      ansible.builtin.template:
-        backup: false
-        dest: "{{ __home__ }}/conf/keycloak.conf"
-        follow: false
-        force: true
-        group: "{{ keycloak_running.account }}"
-        lstrip_blocks: false
-        mode: '0640'
-        newline_sequence: '\n'
-        output_encoding: 'utf-8'
-        owner: 'root'
-        src: 'keycloak.conf.j2'
-        trim_blocks: true
-        unsafe_writes: false
-
-    # The two passwords. Root-only: systemd reads it before it drops to the account.
-    - name: 'PROCESS | Write The Service Environment'
-      no_log: true
-      notify: 'keycloak-restart-required'
-
-      ansible.builtin.template:
-        backup: false
-        dest: "{{ keycloak_running.install_root }}/keycloak.env"
-        follow: false
-        force: true
-        group: 'root'
-        lstrip_blocks: false
-        mode: '0600'
-        newline_sequence: '\n'
-        output_encoding: 'utf-8'
-        owner: 'root'
-        src: 'keycloak.env.j2'
-        trim_blocks: true
-        unsafe_writes: false
-
-    - name: 'PROCESS | Write The Service Unit'
-      notify: 'keycloak-restart-required'
-
-      ansible.builtin.template:
-        backup: false
-        dest: "/etc/systemd/system/{{ keycloak_running.service }}.service"
-        follow: false
-        force: true
-        group: 'root'
-        lstrip_blocks: false
-        mode: '0644'
-        newline_sequence: '\n'
-        output_encoding: 'utf-8'
-        owner: 'root'
-        src: 'keycloak.service.j2'
-        trim_blocks: true
-        unsafe_writes: false
-
-    # The restart handler reloads systemd and starts a stopped service, so on a first converge
-    # it is the one start; on a converged host nothing was notified and nothing restarts.
-    - name: 'PROCESS | Apply A Changed Configuration'
-      ansible.builtin.meta: 'flush_handlers'
-
-    - name: 'PROCESS | Enable And Start Keycloak'
-      ansible.builtin.systemd_service:
-        daemon_reexec: false
-        daemon_reload: false
-        enabled: true
-        force: false
-        masked: false
-        name: "{{ keycloak_running.service }}"
-        no_block: false
-        scope: 'system'
-        state: 'started'
-
-    # Unmeasured: the bound allows the first start to create the schema on a db.t4g.micro.
-    - name: 'PROCESS | Wait Until Keycloak Reports Ready'
-      changed_when: false
-      check_mode: false
-      delay: "{{ keycloak_running.timeouts.ready_pause_seconds | int }}"
-      register: '__keycloak_ready__'
-      retries: "{{ keycloak_running.timeouts.ready_attempts | int }}"
-      until:
-        - __keycloak_ready__.status | default(0) == 200
-        - (__keycloak_ready__.json | default({})).status | default('') == 'UP'
-
-      ansible.builtin.uri:
-        follow_redirects: 'safe'
-        force: false
-        force_basic_auth: false
-        method: 'GET'
-        return_content: true
-        status_code: [ 200 ]
-        timeout: 10
-        unredirected_headers: []
-        url: "http://127.0.0.1:{{ keycloak_running.management_port }}/health/ready"
-        use_gssapi: false
-        use_netrc: true
-        use_proxy: false
-        validate_certs: true
-
-#endregion --- [ Process: Configure And Start Keycloak ] -------------------------------------- #
-
-#region ------ [ End: Prove Keycloak Is Built And Serving ] ---------------------------------- #
+#region ------ [ End: Prove Keycloak Is Built And Serving ] ----------------------------------- #
 
 - name: 'END | Prove Keycloak Is Built As Declared And Serving'
   vars:
@@ -730,6 +661,36 @@
     __record__: >-
       {{ ([keycloak_running.installer.version] + keycloak_running.build_options) | join(' ') }}
   block:
+
+    # measured: 2026-10-02 -- a first start on an empty schema was ready in 44 s (37061257295)
+    - name: 'END | Wait Until Keycloak Reports Ready'
+      changed_when: false
+      check_mode: false
+      delay: "{{ keycloak_running.timeouts.ready_pause_seconds }}"
+      register: '__keycloak_ready__'
+      retries: "{{ keycloak_running.timeouts.ready_attempts }}"
+      until: __keycloak_ready__.status | default(0) == 200
+
+      ansible.builtin.uri:
+        body_format: 'raw'
+        decompress: true
+        follow_redirects: 'safe'
+        force: false
+        force_basic_auth: false
+        headers: {}
+        http_agent: 'ansible-httpget'
+        method: 'GET'
+        remote_src: false
+        return_content: false
+        status_code: [ 200 ]
+        timeout: 10
+        unredirected_headers: []
+        unsafe_writes: false
+        url: "http://127.0.0.1:{{ keycloak_running.management_port }}/health/ready"
+        use_gssapi: false
+        use_netrc: true
+        use_proxy: false
+        validate_certs: true
 
     # The version as Keycloak itself reports it, through the link a service will start from. A
     # JAVA_OPTS_APPEND makes kc.sh announce itself first, so the line is matched [INV-06].
@@ -777,27 +738,6 @@
         stdin_add_newline: true
         strip_empty_ends: true
 
-    - name: 'END | Read Readiness From Keycloak'
-      changed_when: false
-      check_mode: false
-      failed_when: false
-      register: '__keycloak_health__'
-
-      ansible.builtin.uri:
-        follow_redirects: 'safe'
-        force: false
-        force_basic_auth: false
-        method: 'GET'
-        return_content: true
-        status_code: [ 200 ]
-        timeout: 10
-        unredirected_headers: []
-        url: "http://127.0.0.1:{{ keycloak_running.management_port }}/health/ready"
-        use_gssapi: false
-        use_netrc: true
-        use_proxy: false
-        validate_certs: true
-
     - name: 'END | Require The Pinned Version Built With The Declared Options'
       ansible.builtin.assert:
         fail_msg: >-
@@ -813,18 +753,14 @@
             in __keycloak_version__.stdout_lines
           - (__keycloak_record__.stat.checksum | default('')) == (__record__ | hash('sha1'))
 
-    - name: 'END | Require Keycloak Enabled, Running And Ready'
+    - name: 'END | Require Keycloak Enabled And Running'
       ansible.builtin.assert:
         fail_msg: >-
-          Keycloak is not serving. systemctl answered
+          Keycloak is not running as a service. systemctl answered
           {{ __keycloak_service_state__.results | map(attribute='stdout') | list }} for
-          is-enabled and is-active; /health/ready answered HTTP
-          {{ __keycloak_health__.status | default('(no answer)') }}
-          {{ (__keycloak_health__.json | default({})).status | default('') }}.
+          is-enabled and is-active.
         quiet: true
         that:
           - __keycloak_service_state__.results | map(attribute='rc') | list == [0, 0]
-          - __keycloak_health__.status | default(0) == 200
-          - (__keycloak_health__.json | default({})).status | default('') == 'UP'
 
-#endregion --- [ End: Prove Keycloak Is Built And Serving ] ---------------------------------- #
+#endregion --- [ End: Prove Keycloak Is Built And Serving ] ----------------------------------- #
