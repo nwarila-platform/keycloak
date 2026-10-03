@@ -2,25 +2,9 @@
 # File: '{{ role_path }}/meta/main.yml'
 # --- [ Description ] ------------------------------------------------------------------------- #
 #
-# Role metadata for keycloak_db_config. Description-only: NOT an enforcing argument spec. The
-# role's tasks/validate.yml enforces its merged-config guards.
+# Role metadata for keycloak_db_config. defaults/main.yml documents the merged configuration, and
+# tasks/validate.yml enforces its guards.
 #
-# REQUIRED INPUTS -- declared empty in defaults and supplied by the playbook, because each names
-# one particular database:
-#
-#   keycloak_db_config.host, .name
-#                                The PostgreSQL server and the database Keycloak runs in.
-#   keycloak_db_config.administrator.username
-#   keycloak_db_config.administrator.password
-#                                The database's administrative credential. It provisions the role
-#                                and owns the schema; the node receives it only as module
-#                                parameters the modules mask, never on disk.
-#   keycloak_db_config.role.name, .password, .connection_limit
-#                                The login role Keycloak runs as, its password (sent as a SCRAM
-#                                verifier), and the most connections it may hold.
-#   keycloak_db_config.schema    The schema Keycloak creates its tables in.
-#
-# Collections: community.postgresql >= 5.0.0 (the first release tested on ansible-core 2.21).
 # ============================================================================================= #
 ---
 galaxy_info:
