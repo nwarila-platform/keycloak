@@ -47,7 +47,7 @@
 
     # measured: 2026-10-01 -- a fapolicyd reload lags its trigger (84 ms after --update); a new
     # package's trust is inferred to lag the same way, which fails the driver import [INV-02].
-    - name: 'PROCESS | Wait Until The Modules Can Load The Driver'
+    - name: 'PROCESS | Wait Until Fapolicyd Lets The Modules Load The Driver'
       delay: 2
       register: '__keycloak_db_config_ping__'
       retries: 30

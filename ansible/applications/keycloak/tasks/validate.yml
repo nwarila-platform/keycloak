@@ -34,10 +34,10 @@
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to deploy: the playbook must supply installer.bucket, installer.version (three
-      numeric parts, e.g. 26.7.5) and installer.sha256 (64 lower-case hex characters). Got bucket
-      '{{ keycloak_running.installer.bucket }}', version
-      '{{ keycloak_running.installer.version }}', sha256
-      '{{ keycloak_running.installer.sha256 }}'.
+      numeric parts, e.g. 26.7.5) and installer.sha256 (64 lower-case hex characters). Got
+      version '{{ keycloak_running.installer.version }}', sha256
+      '{{ keycloak_running.installer.sha256 }}'; the bucket is not echoed because it carries the
+      account id.
     quiet: true
     that:
       - keycloak_running.installer.bucket | length > 0

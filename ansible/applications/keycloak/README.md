@@ -121,7 +121,8 @@ takes a new version.
    Consequence: `build_options` carries no cache option.
 4. [INV-04] `kc.sh build` and `kc.sh --version` succeed on RHEL's OpenJDK 21 in FIPS mode
    (`SunPKCS11-NSS-FIPS` first, forced with `NSS_FIPS=1` under the FIPS crypto policy on UBI
-   8.10, 2026-10-01). Consequence: no FIPS opt-out is configured.
+   8.10, 2026-10-01). Kernel FIPS mode on the CIS host itself is not yet measured. Consequence:
+   no FIPS opt-out is configured.
 5. [INV-05] The distribution records its entries as owned by the vendor's build account
    (`runner`), read with `tar -tv` on 2026-10-01. Consequence: the unpack sets `root:root` rather
    than keeping the recorded owner.

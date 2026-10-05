@@ -55,14 +55,15 @@
     - name: 'INVENTORY | Require The Stack Endpoints'
       ansible.builtin.assert:
         fail_msg: >-
-          keycloak_database (address, port, master_user_secret_arn), keycloak_load_balancer_dns
-          and keycloak_target_group_arn must be provided as extra-vars. The aws-deploy workflow
-          reads them from Terraform's outputs after apply; a local run reads the same outputs and
-          passes them explicitly.
+          keycloak_database (address, integer port, master_user_secret_arn),
+          keycloak_load_balancer_dns and keycloak_target_group_arn must be provided as
+          extra-vars. The aws-deploy workflow reads them from Terraform's outputs after apply; a
+          local run reads the same outputs and passes them explicitly.
         quiet: true
         that:
           - keycloak_database.address | default('') is match('^[A-Za-z0-9.-]+$')
-          - keycloak_database.port | default(0) | int > 0
+          - keycloak_database.port | default('') is integer
+          - keycloak_database.port | default(0) > 0
           - >-
             keycloak_database.master_user_secret_arn | default('')
             is match('^arn:aws:secretsmanager:')
