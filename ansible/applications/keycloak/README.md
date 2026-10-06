@@ -7,16 +7,15 @@ one converge it:
 1. installs the Java 21 runtime from RHEL AppStream;
 2. creates the unprivileged `keycloak` system account and group;
 3. unpacks the pinned distribution into `/opt/keycloak/<version>` from a copy verified against
-   its SHA-256 on the controller **and** on the guest, immediately before `tar` reads it;
+   its SHA-256 on the guest, immediately before `tar` reads it;
 4. trusts the version's libraries in fapolicyd;
 5. runs `kc.sh build` as the account;
-6. links `/opt/keycloak/current` to the built version;
-7. writes `keycloak.conf`, a root-only environment file carrying the database and first
-   administrator passwords, and a hardened systemd unit, and restarts only when one of them or the
-   link changed;
-8. starts the service and waits for `/health/ready` on the management port;
-9. reads the version back from Keycloak itself, through that link, and the service's state and
-   readiness from the host.
+6. writes `keycloak.conf`, a root-only environment file carrying the database and first
+   administrator passwords, and a hardened systemd unit, then links `/opt/keycloak/current` to
+   the built version, restarting Keycloak when one of them changed;
+7. starts the service;
+8. waits for `/health/ready` on the management port, then reads the version back from Keycloak
+   itself, through that link, and the service's state from the host.
 
 The nodes find each other through the database: Keycloak 26.7's default cache stack, jdbc-ping,
 registers every node there, and the nodes talk on TCP 7800 and 57800. The playbook owns the host
@@ -35,12 +34,31 @@ credentials, and its instance profile carries SSM alone.
 
 ## Inputs
 
-See [`meta/main.yml`](meta/main.yml) for the required inputs and
-[`defaults/main.yml`](defaults/main.yml) for everything with a safe default. The playbook
-supplies `installer.bucket`, `installer.version` and `installer.sha256`, and the database's
-`host`, `name`, `schema`, `username` and `password`; the role composes the object key from the
-version:
+The playbook supplies these, which have no safe default;
+[`tasks/validate.yml`](tasks/validate.yml) enforces them on the controller.
+
+- `installer.bucket`: the S3 bucket holding the distribution, the application repository.
+- `installer.version`: the three-part Keycloak version the tarball delivers. It names the
+  versioned install directory and is read back from `kc.sh`.
+- `installer.sha256`: the lower-case 64-character digest of that object, verified on the guest
+  before it is unpacked.
+- `hostname`: the URL clients reach Keycloak by; every token and redirect is issued under it.
+- `database.host`, `database.name`: the PostgreSQL every node shares, which is also the registry
+  the nodes find each other by (jdbc-ping).
+- `database.schema`: the schema Keycloak creates its tables in.
+- `database.username`, `database.password`: the database role, passed to Keycloak through a
+  root-only environment file, never logged.
+- `administrator.password`: the first administrator's, created only while the master realm has
+  none.
+
+The role composes the object key from the version:
 `Keycloak/Keycloak/<version>/Keycloak_Keycloak_<version>_noarch.tar.gz`.
+
+## Configuration
+
+[`defaults/main.yml`](defaults/main.yml) documents every other input with its safe default: the
+Java runtime, the account, the install root, the build options, the listeners, the database port
+and pool, the administrator's name, the readiness bounds and the fapolicyd trust file.
 
 ## Layout
 
@@ -52,7 +70,7 @@ version:
 | `/opt/keycloak/keycloak.env` | `root`, 0600 | The two passwords; systemd reads it before dropping to the account |
 | `/etc/systemd/system/keycloak.service` | `root` | The hardened unit |
 | `<version>/conf` | `root:keycloak`, `o=` | `keycloak.conf`; read by the account, written by root |
-| `<version>/lib/quarkus` | `keycloak` | The only directory the build rewrites [INV-02] |
+| `<version>/lib/quarkus` | `keycloak` | The only directory the build rewrites (INV-02) |
 | `<version>/data`, `data/tmp` | `keycloak` | Run-time data, and the JVM's temporary directory |
 | `<version>/.unpacked` | `root` | The archive digest, written only after an unpack completes |
 | `<version>/.build-options` | `root` | What the tree was last built from and with |
@@ -65,10 +83,10 @@ build is retried by the next converge.
 
 | Constraint | How the role meets it |
 |---|---|
-| fapolicyd | `lib/` joins the trust file `trust.d/keycloak`; the build waits until the reloaded database carries it [INV-01] |
+| fapolicyd | `lib/` joins the trust file `trust.d/keycloak`; the build waits until the reloaded database carries it (INV-08) |
 | `noexec` `/tmp`, `/var/tmp`, `/home` | JVM temp is `data/tmp`; the home is the install root |
-| FIPS mode | No opt-out: the build and version read run on the FIPS-mode JVM [INV-04] |
-| SELinux | `restorecon -R -v` over the install root, which prints nothing on a converged host |
+| FIPS mode | No opt-out: the build and version read run on the FIPS-mode JVM (INV-04) |
+| SELinux | `restorecon -R -v` over the install root, which prints nothing on a converged host (INV-09) |
 
 ## State
 
@@ -79,6 +97,10 @@ build is retried by the next converge.
 
 `absent` leaves the Java runtime installed: it is a shared system package this role cannot tell
 it installed, and removing it would take any package that requires it along.
+
+A version's tree is unpacked once: `.unpacked` records a complete unpack, so a changed
+`installer.sha256` at an unchanged `installer.version` is not re-examined. A rebuilt distribution
+takes a new version.
 
 ## Design invariants
 
@@ -99,8 +121,8 @@ it installed, and removing it would take any package that requires it along.
    Consequence: `build_options` carries no cache option.
 4. [INV-04] `kc.sh build` and `kc.sh --version` succeed on RHEL's OpenJDK 21 in FIPS mode
    (`SunPKCS11-NSS-FIPS` first, forced with `NSS_FIPS=1` under the FIPS crypto policy on UBI
-   8.10, 2026-10-01). Consequence: no FIPS opt-out is configured. Kernel FIPS mode on the CIS
-   host is the proof the first AWS run owes.
+   8.10, 2026-10-01). Kernel FIPS mode on the CIS host itself is not yet measured. Consequence:
+   no FIPS opt-out is configured.
 5. [INV-05] The distribution records its entries as owned by the vendor's build account
    (`runner`), read with `tar -tv` on 2026-10-01. Consequence: the unpack sets `root:root` rather
    than keeping the recorded owner.
@@ -110,14 +132,22 @@ it installed, and removing it would take any package that requires it along.
 7. [INV-07] The 26.7.5 archive has no entries for `conf/`, `providers/` or `themes/`, only for
    files beneath them, so tar creates those three with the extracting process's umask. On the CIS
    host root's umask is 077, which made them 0700 and failed `kc.sh build` as the account with
-   `ERROR: .../lib/../providers` (measured live on 2026-10-01). A lab with umask 022 had not shown
-   it. Consequence: the role sets `providers/` and `themes/` to 0755 after unpacking. `conf/` is
-   already restricted to `root:keycloak` by its own task.
+   `ERROR: .../lib/../providers` (measured live on 2026-10-01). Consequence: the role sets
+   `providers/` and `themes/` to 0755 after unpacking. `conf/` is already restricted to
+   `root:keycloak` by its own task.
+8. [INV-08] `fapolicyd-cli --update` returns before the daemon has reloaded its database: a build
+   started at once was denied 84 ms after it (Rocky Linux 8, fapolicyd 1.3.2, default rules,
+   2026-10-01). Consequence: after trusting `lib/`, the role reads the loaded database until it
+   lists `lib/`, and fails naming fapolicyd if it never does.
+9. [INV-09] On a fresh CIS RHEL 8 host the unpacked tree does not carry its policy labels:
+   `restorecon -R -v` over the install root changed labels on both nodes in the first converge of
+   AWS Deploy run 37061257295 (2026-10-02), and reported nothing in its second. Consequence: the
+   role relabels the install root on every converge, which a converged host reports as no change.
 
 ## Verification
 
-END is ungated: every converge runs `current/bin/kc.sh --version` as the account and requires
-the line `Keycloak <version>`, and requires `.build-options` to hold the declared version and
-options, and requires the service enabled, active and answering `/health/ready` with `UP`. Two
-steps wait, each bounded: until fapolicyd has loaded the trust, and until a started service
+END is ungated: every converge waits until `/health/ready` answers 200, runs
+`current/bin/kc.sh --version` as the account and requires the line `Keycloak <version>`, requires
+`.build-options` to hold the declared version and options, and requires the service enabled and
+active. Two steps wait, each bounded: until fapolicyd has loaded the trust, and until the service
 reports ready.

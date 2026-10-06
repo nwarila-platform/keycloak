@@ -2,29 +2,9 @@
 # File: '{{ role_path }}/meta/main.yml'
 # --- [ Description ] ------------------------------------------------------------------------- #
 #
-# Role metadata for keycloak. Description-only: NOT an enforcing argument spec. The role's
-# tasks/validate.yml enforces its merged-config guards.
+# Role metadata for keycloak. defaults/main.yml documents the merged configuration, and
+# tasks/validate.yml enforces its guards.
 #
-# REQUIRED INPUTS -- declared empty in defaults and supplied by the playbook, because every
-# artifact location carries an account id and a concrete default would ship one site's values:
-#
-#   keycloak.installer.bucket    S3 bucket holding the distribution (the application repository).
-#   keycloak.installer.version   Three-part Keycloak version the tarball delivers; names the
-#                                versioned install directory and is read back from kc.sh.
-#   keycloak.installer.sha256    Lowercase 64-character digest of that object, verified on the
-#                                controller and again on the GUEST before it is unpacked.
-#   keycloak.hostname            The URL clients reach Keycloak by (the load balancer); every
-#                                token and redirect is issued under it.
-#   keycloak.database.host       The shared PostgreSQL every node uses; also the registry by
-#   keycloak.database.name       which the nodes find each other (the jdbc-ping cache stack).
-#   keycloak.database.schema     The schema Keycloak creates its tables in.
-#   keycloak.database.username   The database role, and its password: passed to Keycloak
-#   keycloak.database.password   verbatim through a root-only environment file, never logged.
-#   keycloak.administrator.password
-#                                The first administrator, created only while the master realm
-#                                has none.
-#
-# The controller fetches the object with its own credentials; the role hands the guest none.
 # ============================================================================================= #
 ---
 galaxy_info:
@@ -32,11 +12,8 @@ galaxy_info:
   namespace: 'nwarila_platform'
   author: 'nwarila-platform'
   description: >-
-    Keycloak for CIS-hardened RHEL 8. Installs the AppStream Java 21 runtime and an unprivileged
-    service account, unpacks the pinned, digest-verified distribution into a versioned directory
-    trusted by fapolicyd, runs kc.sh build with the declared build-time options, and runs it as a
-    hardened systemd service against a shared PostgreSQL database, where every node joins one
-    cluster -- then reads the version, the service state and readiness back from the host.
+    Keycloak on CIS-hardened RHEL 8: a pinned, digest-verified, fapolicyd-trusted build run as a
+    hardened systemd service against a shared PostgreSQL database.
   license: 'MIT'
   min_ansible_version: '2.21'
   platforms:

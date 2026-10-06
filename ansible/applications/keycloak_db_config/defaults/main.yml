@@ -8,8 +8,8 @@
 #
 # Universally safe values live here: the port and the Python driver. The server, the database,
 # both credentials, the role and the schema name one particular database, so they are declared
-# empty and the PLAYBOOK supplies them where a reader can see them (meta/main.yml,
-# tasks/validate.yml).
+# empty and the PLAYBOOK supplies them where a reader can see them; tasks/validate.yml enforces
+# them.
 #
 # ============================================================================================= #
 ---
@@ -17,9 +17,13 @@ keycloak_db_config_defaults:
 
   #region ------ [ Database ] ----------------------------------------------------------------- #
 
-  # The PostgreSQL server and the database Keycloak runs in.
+  # The PostgreSQL server Keycloak's database lives on.
   host: ''
+
+  # Its port; 5432 is PostgreSQL's own default.
   port: 5432
+
+  # The database Keycloak runs in.
   name: ''
 
   # The database's administrative credential: it provisions the role and owns the schema.
@@ -27,7 +31,7 @@ keycloak_db_config_defaults:
     username: ''
     password: ''
 
-  # The login role Keycloak runs as, and the most connections it may hold.
+  # The login role Keycloak runs as: its name, its password and its connection limit.
   role:
     name: ''
     password: ''
@@ -40,10 +44,8 @@ keycloak_db_config_defaults:
 
   #region ------ [ Python Driver ] ------------------------------------------------------------ #
 
-  # The modules import psycopg2 under the inventory's python3.12, so this is psycopg2 built for
-  # it, from RHEL 8 AppStream. python_driver_path is where that package installs it, which
-  # fapolicyd must list before the modules load it.
+  # The modules import psycopg2 under the inventory's python3.12, so this is the psycopg2 that
+  # RHEL 8 AppStream builds for it.
   python_driver_package: 'python3.12-psycopg2'
-  python_driver_path: '/usr/lib64/python3.12/site-packages/psycopg2/'
 
   #endregion --- [ Python Driver ] ------------------------------------------------------------ #

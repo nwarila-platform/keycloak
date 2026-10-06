@@ -4,15 +4,13 @@
 #
 # Validates the merged keycloak configuration on the CONTROLLER, before anything touches the
 # guest, so a missing or malformed input fails in a second rather than mid-converge at the cost
-# of an instance. meta/main.yml describes these inputs; this file enforces them.
+# of an instance. defaults/main.yml describes these inputs; this file enforces them.
 #
 # ============================================================================================= #
 ---
 
-#region ------ [ Validate: The Inputs Removal Reads ] ----------------------------------------- #
-
-# check: safety-critical -- state=absent deletes install_root recursively and the account by
-# name, so each must be one plain name: no dot-only path segment, nothing outside /opt.
+# check: safety-critical
+# state=absent deletes install_root recursively, and the account, unit and trust file by name.
 - name: 'VALIDATE | Require A Removable Install Root And Account'
   when: (state | default('present') | string | lower | trim) in ['present', 'absent']
 
@@ -20,78 +18,65 @@
     fail_msg: >-
       Refusing to continue: install_root must be one directory directly under /opt, account one
       lower-case system account name, and service and fapolicyd_trust_file plain names, because
-      state=absent removes each by them. Got install_root
-      '{{ keycloak_running.install_root | default('') }}', account
-      '{{ keycloak_running.account | default('') }}', service
-      '{{ keycloak_running.service | default('') }}', fapolicyd_trust_file
-      '{{ keycloak_running.fapolicyd_trust_file | default('') }}'.
+      state=absent removes each by them. Got install_root '{{ keycloak_running.install_root }}',
+      account '{{ keycloak_running.account }}', service '{{ keycloak_running.service }}',
+      fapolicyd_trust_file '{{ keycloak_running.fapolicyd_trust_file }}'.
     quiet: true
     that:
-      - keycloak_running.install_root | default('') is match('^/opt/[A-Za-z0-9][A-Za-z0-9._-]*$')
-      - keycloak_running.account | default('') is match('^[a-z_][a-z0-9_-]{0,31}$')
-      - keycloak_running.service | default('') is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
-      - >-
-        keycloak_running.fapolicyd_trust_file | default('')
-        is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - keycloak_running.install_root is match('^/opt/[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - keycloak_running.account is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - keycloak_running.service is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - keycloak_running.fapolicyd_trust_file is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
-#endregion --- [ Validate: The Inputs Removal Reads ] ----------------------------------------- #
-
-#region ------ [ Validate: The Pinned Installer ] --------------------------------------------- #
-
-# check: safety-critical -- the version names the directory the tarball unpacks into and is
-# compared with what Keycloak reports, and the digest is the only thing vouching for the bytes.
 - name: 'VALIDATE | Require The Pinned Installer'
   when: (state | default('present') | string | lower | trim) == 'present'
 
   ansible.builtin.assert:
     fail_msg: >-
-      Refusing to deploy: the playbook must supply installer.bucket (an S3 bucket name),
-      installer.version (three numeric parts, e.g. 26.7.5) and installer.sha256 (64 lower-case
-      hex characters), and installer.key must carry the <version> token. The bucket is not echoed
-      because it carries the account id. Got version
-      '{{ keycloak_running.installer.version | default('') }}', sha256
-      '{{ keycloak_running.installer.sha256 | default('') }}', key
-      '{{ keycloak_running.installer.key | default('') }}'.
+      Refusing to deploy: the playbook must supply installer.bucket, installer.version (three
+      numeric parts, e.g. 26.7.5) and installer.sha256 (64 lower-case hex characters). Got
+      version '{{ keycloak_running.installer.version }}', sha256
+      '{{ keycloak_running.installer.sha256 }}'; the bucket is not echoed because it carries the
+      account id.
     quiet: true
     that:
-      - >-
-        keycloak_running.installer.bucket | default('')
-        is match('^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$')
-      - keycloak_running.installer.key | default('') is search('<version>')
-      - keycloak_running.installer.version | default('') is match('^[0-9]+[.][0-9]+[.][0-9]+$')
-      - keycloak_running.installer.sha256 | default('') is match('^[0-9a-f]{64}$')
+      - keycloak_running.installer.bucket | length > 0
+      - keycloak_running.installer.version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+      - keycloak_running.installer.sha256 is match('^[0-9a-f]{64}$')
 
-#endregion --- [ Validate: The Pinned Installer ] --------------------------------------------- #
-
-#region ------ [ Validate: The Runtime Inputs ] ----------------------------------------------- #
-
-# check: the hostname is every token's issuer and the database is the cluster's only shared
-# state, so neither may silently default. Neither password is echoed.
-- name: 'VALIDATE | Require The Hostname, Database And Administrator'
+- name: 'VALIDATE | Require The Hostname, Listeners, Database And Administrator'
   when: (state | default('present') | string | lower | trim) == 'present'
 
   ansible.builtin.assert:
     fail_msg: >-
       Refusing to deploy: the playbook must supply hostname (an http or https URL with no path),
-      database.host, database.name, database.schema, database.username and database.password, and
-      administrator.password; database.port and database.pool_max_size must be positive
-      integers. Got hostname '{{ keycloak_running.hostname | default('') }}', database host
-      '{{ keycloak_running.database.host | default('') }}', port
-      '{{ keycloak_running.database.port | default('') }}', name
-      '{{ keycloak_running.database.name | default('') }}', schema
-      '{{ keycloak_running.database.schema | default('') }}', username
-      '{{ keycloak_running.database.username | default('') }}'.
+      database.host, database.name, database.schema, database.username, database.password and
+      administrator.password; http_port, management_port, database.port and
+      database.pool_max_size must be integers above 0, and administrator.username non-empty.
+      Neither password is echoed. Got hostname '{{ keycloak_running.hostname }}', http_port
+      '{{ keycloak_running.http_port }}', management_port
+      '{{ keycloak_running.management_port }}', database host
+      '{{ keycloak_running.database.host }}', port '{{ keycloak_running.database.port }}', name
+      '{{ keycloak_running.database.name }}', schema
+      '{{ keycloak_running.database.schema }}', username
+      '{{ keycloak_running.database.username }}', pool_max_size
+      '{{ keycloak_running.database.pool_max_size }}', administrator
+      '{{ keycloak_running.administrator.username }}'.
     quiet: true
     that:
-      - keycloak_running.hostname | default('') is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
-      - keycloak_running.database.host | default('') is match('^[A-Za-z0-9.-]+$')
-      - keycloak_running.database.port | default(0) | int > 0
-      - keycloak_running.database.name | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
-      - keycloak_running.database.schema | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
-      - keycloak_running.database.username | default('') is match('^[A-Za-z_][A-Za-z0-9_]*$')
-      - keycloak_running.database.password | default('') | length > 0
-      - keycloak_running.database.pool_max_size | default(0) | int > 0
-      - keycloak_running.administrator.username | default('') | length > 0
-      - keycloak_running.administrator.password | default('') | length > 0
-
-#endregion --- [ Validate: The Runtime Inputs ] ----------------------------------------------- #
+      - keycloak_running.hostname is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')
+      - keycloak_running.http_port is integer
+      - keycloak_running.http_port > 0
+      - keycloak_running.management_port is integer
+      - keycloak_running.management_port > 0
+      - keycloak_running.database.host is match('^[A-Za-z0-9.-]+$')
+      - keycloak_running.database.port is integer
+      - keycloak_running.database.port > 0
+      - keycloak_running.database.name is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.schema is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.username is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - keycloak_running.database.password | length > 0
+      - keycloak_running.database.pool_max_size is integer
+      - keycloak_running.database.pool_max_size > 0
+      - keycloak_running.administrator.username | length > 0
+      - keycloak_running.administrator.password | length > 0

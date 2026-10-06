@@ -6,9 +6,9 @@
 # vars/ over this map and publishes the result as 'keycloak_running'; tasks read only that.
 #
 # Universally safe values live here: the runtime, the account, the layout, the build options and
-# the listener. The artifact's location and digest, the hostname, the database and the
-# administrator's password change with every site or stack, so they are declared empty and the
-# PLAYBOOK supplies them where a reader can see them (meta/main.yml, tasks/validate.yml).
+# the listeners. The installer's bucket, version and digest, the hostname, the database and the
+# administrator's password are deployment-specific, so they are declared empty and the PLAYBOOK
+# supplies them where a reader can see them; tasks/validate.yml enforces them.
 #
 # ============================================================================================= #
 ---
@@ -18,7 +18,7 @@ keycloak_defaults:
 
   # The distribution tarball, at the application repository's <Publisher>/<Application>/<version>
   # layout. The token <version> is replaced with installer.version, so a bump is one version and
-  # one digest; the controller fetches it and the guest verifies the digest before unpacking it.
+  # one digest.
   installer:
     bucket: ''
     key: 'Keycloak/Keycloak/<version>/Keycloak_Keycloak_<version>_noarch.tar.gz'
@@ -41,7 +41,7 @@ keycloak_defaults:
   #region ------ [ Service Account ] ---------------------------------------------------------- #
 
   # One name for the system account and its group. It never logs in, and its home is the install
-  # root because /home is noexec on a CIS host. state=absent removes it.
+  # root because /home is noexec on a CIS host.
   account: 'keycloak'
 
   #endregion --- [ Service Account ] ---------------------------------------------------------- #
@@ -69,25 +69,25 @@ keycloak_defaults:
   #region ------ [ Runtime ] ------------------------------------------------------------------ #
 
   # The URL users and the load balancer reach Keycloak by; every token and redirect is issued
-  # under it. It is the load balancer's name, which changes with every stack, so the playbook
-  # supplies it.
+  # under it. Deployment-specific, so the playbook supplies it.
   hostname: ''
 
-  # The load balancer terminates the client connection, so Keycloak reads the scheme and host
-  # from X-Forwarded-* headers; only the load balancer and the host itself reach the HTTP port
-  # (terraform/aws.tfvars). Keycloak trusts the leftmost X-Forwarded-For entry, which a client can
-  # write, so the load balancer removes that header (xff_header_processing_mode) and Keycloak
-  # records the load balancer's address rather than one a client chose.
+  # Keycloak takes the scheme, host and client address from the proxy's X-Forwarded-* headers
+  # and trusts the leftmost X-Forwarded-For entry (ee5985d), so the proxy in front of it must
+  # replace that header rather than append to it.
   proxy_headers: 'xforwarded'
+
+  # The user-facing HTTP listener.
   http_port: 8080
-  # Health and metrics answer here, apart from the user-facing port; written to keycloak.conf.
+
+  # Health and metrics answer here, apart from the user-facing port.
   management_port: 9000
 
   service: 'keycloak'
 
   # The database every node shares. It is also how the nodes find each other: the 26.x default
   # cache stack, jdbc-ping, registers each node in it. Its address, its credentials and the
-  # schema Keycloak runs in change with every stack, so the playbook supplies them.
+  # schema are deployment-specific.
   database:
     host: ''
     port: 5432
@@ -95,8 +95,7 @@ keycloak_defaults:
     schema: ''
     username: ''
     password: ''
-    # A db.t4g.micro admits about eighty connections; Keycloak's default pool of 100 per node
-    # would let two nodes exhaust it under load.
+    # Per node: the database's connection limit must admit every node's pool at once.
     pool_max_size: 20
 
   # Created only while the master realm has no administrator: by the first node to start against

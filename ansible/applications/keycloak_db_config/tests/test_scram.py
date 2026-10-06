@@ -7,8 +7,6 @@ publishes for user "user" and password "pencil": the client's proof must verify 
 and ServerKey must sign the exchange exactly as the RFC's server did.
 """
 
-from __future__ import annotations
-
 import base64
 import hashlib
 import hmac
