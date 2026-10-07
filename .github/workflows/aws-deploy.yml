@@ -26,8 +26,8 @@
 #   * The stack is two Keycloak nodes in two zones, an RDS PostgreSQL database and an internal
 #     application load balancer. The playbook converges twice -- the second must change nothing
 #     -- and then proves the cluster survives losing a node, before any hold or teardown.
-#   * Protected-main pushes that touch the deploy inputs — terraform, ansible, the framework
-#     pins, this workflow — prove immediately; an off-minute weekly schedule proves recurrence.
+#   * Pushes to protected main that match the path filter below run the lifecycle proof
+#     immediately; operators can also dispatch the proof manually on main.
 #     One durable incident is updated on failure and closed after the next successful lifecycle.
 # =========================================================================================== #
 name: AWS Deploy
@@ -48,9 +48,6 @@ name: AWS Deploy
       - '.github/ansible-framework-pin'       # a pin bump changes what is deployed
       - '.github/terraform-framework-pin'
       - '.github/workflows/aws-deploy.yml'
-  schedule:
-    # Avoid the top-of-hour load spike documented for scheduled Actions workflows.
-    - cron: '17 9 * * 1'
 permissions: {}
 
 # One boundary, one state key — never two runs at once, never cancel a live apply.
