@@ -46,8 +46,8 @@ all_systems = [
     # no read of the application repository.
     iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
-    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10 — the same hardened base the
-    # secure-wazuh Linux legs use. Its v07 was deprecated on 2026-10-05 and is no longer found.
+    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10. The publisher deprecates old versions,
+    # and the framework's lookup then fails ("Your query returned no results"): pin the newest.
     ami = "ami-099eb08281f527485"
     # No standalone data volumes yet, so the OS instance is not swap-eligible; a future
     # persistent deployment declares its data volumes below and flips this to true.
@@ -214,8 +214,8 @@ all_systems = [
     # no read of the application repository.
     iam_instance_profile = "nwarila-ec2-profile"
     aws_kms_alias        = "aws/ebs"
-    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10 — the same hardened base the
-    # secure-wazuh Linux legs use. Its v07 was deprecated on 2026-10-05 and is no longer found.
+    # CIS Red Hat Enterprise Linux 8 Benchmark - STIG, v10. The publisher deprecates old versions,
+    # and the framework's lookup then fails ("Your query returned no results"): pin the newest.
     ami = "ami-099eb08281f527485"
     # No standalone data volumes yet, so the OS instance is not swap-eligible; a future
     # persistent deployment declares its data volumes below and flips this to true.
