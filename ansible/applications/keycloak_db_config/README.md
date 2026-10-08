@@ -78,9 +78,11 @@ else uses. A second `absent` run changes nothing.
    fapolicyd guide, "The plugin notifies the fapolicyd daemon"), and a notified daemon reloads
    its trust behind the notification: the keycloak role measured a deny 84 ms after
    `fapolicyd-cli --update` (Rocky 8, fapolicyd 1.3.2, 2026-10-01). That the plugin's
-   notification reloads the same way is inferred. Consequence: after installing the driver, the
-   role retries a `postgresql_ping`, which imports the driver as the modules' user, until the
-   import succeeds, and fails naming the driver import if it never does.
+   notification reloads the same way is inferred. On RDS PostgreSQL 17 from CIS RHEL 8 v10 (AWS
+   Deploy run 37765837623, 2026-10-08), the first ping imported the driver on both converges.
+   Consequence: after installing the driver, the role retries a `postgresql_ping`, which imports
+   the driver as the modules' user, until the import succeeds, and fails naming the driver
+   import if it never does.
 3. [INV-03] PostgreSQL keeps the text of `CREATE USER ... PASSWORD '<value>'` verbatim in
    `pg_stat_statements` and, under `log_statement = ddl`, in the server log; given a
    SCRAM-SHA-256 verifier instead, it stores the verifier byte-for-byte and authenticates the
