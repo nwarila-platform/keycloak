@@ -47,6 +47,7 @@
 
     # measured: 2026-10-01 -- a fapolicyd reload lags its trigger (84 ms after --update); a new
     # package's trust is inferred to lag the same way, which fails the driver import [INV-02].
+    # measured: 2026-10-08 -- the first attempt succeeded on RDS and CIS RHEL 8 (37765837623).
     - name: 'PROCESS | Wait Until Fapolicyd Lets The Modules Load The Driver'
       delay: 2
       register: '__keycloak_db_config_ping__'
